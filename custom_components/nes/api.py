@@ -9,9 +9,10 @@ import os
 import re
 from datetime import timedelta
 from typing import Any
-from urllib.parse import urlencode, urlparse, parse_qs
+from urllib.parse import urlencode, urlparse, parse_qs, quote
 
 import aiohttp
+from yarl import URL
 
 from homeassistant.util import dt as dt_util
 
@@ -32,6 +33,11 @@ from .const import (
 
 class NESAuthError(Exception):
     """Authentication error."""
+
+
+def _urlencode(value: str) -> str:
+    """URL-encode a string for form data."""
+    return quote(value, safe="")
 
 
 class NESConnectionError(Exception):
@@ -84,21 +90,24 @@ class NESApiClient:
         """Authenticate with Azure AD B2C using Authorization Code + PKCE.
 
         Simulates the browser-based B2C login flow:
-        1. GET /authorize → get CSRF token (x-ms-cpim-trans) and settings
-        2. POST /SelfAsserted → submit username/password
-        3. GET /confirmed → get authorization code via redirect
-        4. POST /token → exchange code for tokens
+        1. GET /authorize -> get CSRF token and session cookies
+        2. POST /SelfAsserted -> submit username/password
+        3. GET /confirmed -> get authorization code via redirect
+        4. POST /token -> exchange code for tokens
+
+        Note: cookies are managed manually because aiohttp quotes cookie
+        values containing +/=/; characters, which B2C cannot parse.
         """
         code_verifier, code_challenge = self._generate_pkce()
         state = base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()
         nonce = base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()
 
         try:
-            # Use a dedicated session for the B2C auth flow so cookies
-            # (x-ms-cpim-trans, etc.) are isolated and don't leak into the
-            # shared HA session.
-            auth_jar = aiohttp.CookieJar()
-            async with aiohttp.ClientSession(cookie_jar=auth_jar) as auth_session:
+            # Use DummyCookieJar — we manage cookies manually because
+            # aiohttp quotes values with +/= chars, breaking B2C.
+            async with aiohttp.ClientSession(
+                cookie_jar=aiohttp.DummyCookieJar()
+            ) as auth_session:
                 # Step 1: Start the authorization flow
                 auth_params = {
                     "client_id": B2C_CLIENT_ID,
@@ -115,7 +124,6 @@ class NESApiClient:
                 async with auth_session.get(
                     B2C_AUTHORIZE_URL,
                     params=auth_params,
-                    allow_redirects=True,
                 ) as resp:
                     if resp.status != 200:
                         raise NESAuthError(
@@ -124,7 +132,16 @@ class NESApiClient:
 
                     page_html = await resp.text()
 
-                    # Extract CSRF token and transaction ID from the page
+                    # Capture raw Set-Cookie values (unquoted)
+                    raw_cookies: dict[str, str] = {}
+                    for hdr_key, hdr_val in resp.raw_headers:
+                        if hdr_key.lower() == b"set-cookie":
+                            cookie_str = hdr_val.decode()
+                            cname = cookie_str.split("=", 1)[0]
+                            cval = cookie_str.split("=", 1)[1].split(";")[0]
+                            raw_cookies[cname] = cval
+
+                    # Extract CSRF token and transaction ID
                     csrf_match = re.search(
                         r'"csrf"\s*:\s*"([^"]+)"', page_html
                     )
@@ -134,10 +151,9 @@ class NESApiClient:
 
                     if not csrf_match or not trans_match:
                         LOGGER.debug(
-                            "Could not find CSRF/transId in page. "
+                            "Could not find CSRF/transId. "
                             "Page length: %d, URL: %s",
-                            len(page_html),
-                            str(resp.url),
+                            len(page_html), str(resp.url),
                         )
                         raise NESAuthError(
                             "Failed to extract auth parameters from login page"
@@ -151,29 +167,31 @@ class NESApiClient:
                     len(csrf_token),
                 )
 
+                # Build Cookie header manually (no quoting)
+                cookie_header = "; ".join(
+                    f"{k}={v}" for k, v in raw_cookies.items()
+                )
+
                 # Step 2: Submit credentials to SelfAsserted endpoint
-                self_asserted_params = {
-                    "tx": trans_id,
-                    "p": "B2C_1A_NES_SignUpOrSignIn",
-                }
-
-                login_data = {
-                    "request_type": "RESPONSE",
-                    "signInName": self._username,
-                    "password": self._password,
-                }
-
+                sa_url = (
+                    f"{B2C_SELF_ASSERTED_URL}"
+                    f"?tx={trans_id}&p=B2C_1A_NES_SignUpOrSignIn"
+                )
+                login_data = (
+                    f"request_type=RESPONSE"
+                    f"&signInName={_urlencode(self._username)}"
+                    f"&password={_urlencode(self._password)}"
+                )
                 headers = {
                     "X-CSRF-TOKEN": csrf_token,
                     "X-Requested-With": "XMLHttpRequest",
                     "Content-Type":
                         "application/x-www-form-urlencoded; charset=UTF-8",
-                    "Origin": "https://pdnesb2c.b2clogin.com",
+                    "Cookie": cookie_header,
                 }
 
                 async with auth_session.post(
-                    B2C_SELF_ASSERTED_URL,
-                    params=self_asserted_params,
+                    URL(sa_url, encoded=True),
                     data=login_data,
                     headers=headers,
                     allow_redirects=False,
@@ -182,70 +200,71 @@ class NESApiClient:
 
                     LOGGER.debug(
                         "Step 2 SelfAsserted: status=%d, "
-                        "response_length=%d, is_json=%s, snippet=%s",
+                        "content_type=%s, snippet=%s",
                         resp.status,
-                        len(resp_text),
-                        resp_text.startswith("{"),
+                        resp.headers.get("Content-Type", ""),
                         resp_text[:200],
                     )
 
-                    # B2C returns 200 with JSON for AJAX requests
-                    if resp.status == 200 and '"status":"FAIL"' in resp_text:
-                        raise NESAuthError("Invalid email or password")
-                    if resp.status == 200 and '"status":"200"' in resp_text:
-                        LOGGER.debug("Step 2 complete: credentials accepted")
-                    elif resp.status == 200 and resp_text.startswith("<!"):
-                        # Got HTML instead of JSON — B2C didn't treat
-                        # this as an AJAX request. Log details for debugging.
+                    if resp.status == 200 and resp_text.startswith("{"):
+                        import json as json_mod
+                        result = json_mod.loads(resp_text)
+                        if str(result.get("status", "")) != "200":
+                            raise NESAuthError("Invalid email or password")
+                    elif resp.status == 200:
                         LOGGER.warning(
-                            "B2C returned HTML instead of JSON from "
-                            "SelfAsserted. This usually means the session "
-                            "cookies or CSRF token were not properly sent. "
-                            "Response length: %d",
-                            len(resp_text),
+                            "B2C returned non-JSON from SelfAsserted "
+                            "(length=%d)", len(resp_text),
                         )
                         raise NESAuthError(
-                            "Login page returned instead of API response — "
-                            "session may have expired"
+                            "Unexpected response from login"
                         )
-                    elif resp.status != 200:
+                    else:
                         raise NESAuthError(
                             f"SelfAsserted returned HTTP {resp.status}"
                         )
 
+                    # Capture any new cookies from Step 2
+                    for hdr_key, hdr_val in resp.raw_headers:
+                        if hdr_key.lower() == b"set-cookie":
+                            cookie_str = hdr_val.decode()
+                            cname = cookie_str.split("=", 1)[0]
+                            cval = cookie_str.split("=", 1)[1].split(";")[0]
+                            raw_cookies[cname] = cval
+
+                cookie_header = "; ".join(
+                    f"{k}={v}" for k, v in raw_cookies.items()
+                )
+
                 LOGGER.debug("Step 2 done, requesting authorization code")
 
-                # Step 3: Get the authorization code from confirmed endpoint
-                confirmed_params = {
-                    "rememberMe": "false",
-                    "csrf_token": csrf_token,
-                    "tx": trans_id,
-                    "p": "B2C_1A_NES_SignUpOrSignIn",
-                }
+                # Step 3: Get the authorization code
+                confirmed_url = (
+                    f"{B2C_CONFIRMED_URL}"
+                    f"?rememberMe=false"
+                    f"&csrf_token={csrf_token}"
+                    f"&tx={trans_id}"
+                    f"&p=B2C_1A_NES_SignUpOrSignIn"
+                )
 
                 async with auth_session.get(
-                    B2C_CONFIRMED_URL,
-                    params=confirmed_params,
+                    URL(confirmed_url, encoded=True),
+                    headers={"Cookie": cookie_header},
                     allow_redirects=False,
                 ) as resp:
                     LOGGER.debug(
-                        "Step 3 confirmed: status=%d, "
-                        "has_location=%s",
-                        resp.status,
-                        "Location" in resp.headers,
+                        "Step 3 confirmed: status=%d, has_location=%s",
+                        resp.status, "Location" in resp.headers,
                     )
 
                     if resp.status not in (302, 303):
                         body = await resp.text()
                         LOGGER.debug(
-                            "Step 3 unexpected response: status=%d, "
-                            "body=%s",
-                            resp.status,
-                            body[:300],
+                            "Step 3 unexpected: status=%d, body=%s",
+                            resp.status, body[:300],
                         )
                         raise NESAuthError(
-                            f"Expected redirect from confirmed endpoint, "
-                            f"got HTTP {resp.status}"
+                            f"Expected redirect, got HTTP {resp.status}"
                         )
 
                     location = resp.headers.get("Location", "")
@@ -259,9 +278,7 @@ class NESApiClient:
                         raise NESAuthError(f"Auth error: {error_desc}")
 
                     if "code" not in query_params:
-                        LOGGER.debug(
-                            "Redirect location: %s", location[:200]
-                        )
+                        LOGGER.debug("Redirect: %s", location[:200])
                         raise NESAuthError(
                             "No authorization code in redirect"
                         )
@@ -269,7 +286,7 @@ class NESApiClient:
                     auth_code = query_params["code"][0]
 
                 LOGGER.debug(
-                    "Step 3 complete: got authorization code (%d chars)",
+                    "Step 3 complete: got auth code (%d chars)",
                     len(auth_code),
                 )
 
