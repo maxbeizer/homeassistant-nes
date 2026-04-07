@@ -150,7 +150,7 @@ class NESApiClient:
                     )
 
                     if not csrf_match or not trans_match:
-                        LOGGER.debug(
+                        LOGGER.warning(
                             "Could not find CSRF/transId. "
                             "Page length: %d, URL: %s",
                             len(page_html), str(resp.url),
@@ -162,7 +162,7 @@ class NESApiClient:
                     csrf_token = csrf_match.group(1)
                     trans_id = trans_match.group(1)
 
-                LOGGER.debug(
+                LOGGER.warning(
                     "Step 1 complete: got CSRF token (%d chars) and transId",
                     len(csrf_token),
                 )
@@ -198,7 +198,7 @@ class NESApiClient:
                 ) as resp:
                     resp_text = await resp.text()
 
-                    LOGGER.debug(
+                    LOGGER.warning(
                         "Step 2 SelfAsserted: status=%d, "
                         "content_type=%s, snippet=%s",
                         resp.status,
@@ -236,7 +236,7 @@ class NESApiClient:
                     f"{k}={v}" for k, v in raw_cookies.items()
                 )
 
-                LOGGER.debug("Step 2 done, requesting authorization code")
+                LOGGER.warning("Step 2 done, requesting authorization code")
 
                 # Step 3: Get the authorization code
                 confirmed_url = (
@@ -252,14 +252,14 @@ class NESApiClient:
                     headers={"Cookie": cookie_header},
                     allow_redirects=False,
                 ) as resp:
-                    LOGGER.debug(
+                    LOGGER.warning(
                         "Step 3 confirmed: status=%d, has_location=%s",
                         resp.status, "Location" in resp.headers,
                     )
 
                     if resp.status not in (302, 303):
                         body = await resp.text()
-                        LOGGER.debug(
+                        LOGGER.warning(
                             "Step 3 unexpected: status=%d, body=%s",
                             resp.status, body[:300],
                         )
@@ -278,14 +278,14 @@ class NESApiClient:
                         raise NESAuthError(f"Auth error: {error_desc}")
 
                     if "code" not in query_params:
-                        LOGGER.debug("Redirect: %s", location[:200])
+                        LOGGER.warning("Redirect: %s", location[:200])
                         raise NESAuthError(
                             "No authorization code in redirect"
                         )
 
                     auth_code = query_params["code"][0]
 
-                LOGGER.debug(
+                LOGGER.warning(
                     "Step 3 complete: got auth code (%d chars)",
                     len(auth_code),
                 )
@@ -304,7 +304,7 @@ class NESApiClient:
                     B2C_TOKEN_URL, data=token_data
                 ) as resp:
                     resp_text = await resp.text()
-                    LOGGER.debug(
+                    LOGGER.warning(
                         "Step 4 token exchange: status=%d, "
                         "content_type=%s, length=%d, snippet=%s",
                         resp.status,
@@ -326,7 +326,7 @@ class NESApiClient:
                             f"Token response is not valid JSON"
                         ) from err
 
-                    LOGGER.debug(
+                    LOGGER.warning(
                         "Token response keys: %s",
                         list(result.keys()) if isinstance(result, dict) else type(result),
                     )
@@ -341,7 +341,7 @@ class NESApiClient:
                     self._token_expiry = (
                         dt_util.utcnow() + timedelta(seconds=expires_in)
                     )
-                    LOGGER.debug("Successfully authenticated with NES")
+                    LOGGER.warning("Successfully authenticated with NES")
 
         except aiohttp.ClientError as err:
             raise NESConnectionError(
