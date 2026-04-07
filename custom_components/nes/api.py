@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import base64
+import os
+import re
 from datetime import timedelta
 from typing import Any
+from urllib.parse import urlencode, urlparse, parse_qs
 
 import aiohttp
 
@@ -14,9 +19,12 @@ from .const import (
     API_BASE_URL,
     API_ENDPOINT_CUSTOMER,
     API_ENDPOINT_USAGE,
+    B2C_AUTHORIZE_URL,
     B2C_CLIENT_ID,
+    B2C_CONFIRMED_URL,
     B2C_REDIRECT_URI,
     B2C_SCOPE,
+    B2C_SELF_ASSERTED_URL,
     B2C_TOKEN_URL,
     LOGGER,
 )
@@ -59,37 +67,204 @@ class NESApiClient:
         """Return the NES customer ID."""
         return self._customer_id
 
+    @staticmethod
+    def _generate_pkce() -> tuple[str, str]:
+        """Generate PKCE code verifier and challenge."""
+        code_verifier = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
+        code_challenge = (
+            base64.urlsafe_b64encode(
+                hashlib.sha256(code_verifier.encode()).digest()
+            )
+            .rstrip(b"=")
+            .decode()
+        )
+        return code_verifier, code_challenge
+
     async def async_authenticate(self) -> None:
-        """Authenticate with Azure AD B2C using ROPC flow."""
-        data = {
-            "grant_type": "password",
-            "client_id": B2C_CLIENT_ID,
-            "username": self._username,
-            "password": self._password,
-            "scope": B2C_SCOPE,
-            "redirect_uri": B2C_REDIRECT_URI,
-        }
+        """Authenticate with Azure AD B2C using Authorization Code + PKCE.
+
+        Simulates the browser-based B2C login flow:
+        1. GET /authorize → get CSRF token (x-ms-cpim-trans) and settings
+        2. POST /SelfAsserted → submit username/password
+        3. GET /confirmed → get authorization code via redirect
+        4. POST /token → exchange code for tokens
+        """
+        code_verifier, code_challenge = self._generate_pkce()
+        state = base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()
+        nonce = base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()
 
         try:
-            async with self._session.post(B2C_TOKEN_URL, data=data) as resp:
-                if resp.status == 400:
-                    error_body = await resp.json()
-                    error_desc = error_body.get("error_description", "")
-                    LOGGER.debug("Auth error response: %s", error_desc)
-                    raise NESAuthError(
-                        f"Authentication failed: {error_body.get('error', 'unknown')}"
+            # Use a dedicated session for the B2C auth flow so cookies
+            # (x-ms-cpim-trans, etc.) are isolated and don't leak into the
+            # shared HA session.
+            auth_jar = aiohttp.CookieJar()
+            async with aiohttp.ClientSession(cookie_jar=auth_jar) as auth_session:
+                # Step 1: Start the authorization flow
+                auth_params = {
+                    "client_id": B2C_CLIENT_ID,
+                    "redirect_uri": B2C_REDIRECT_URI,
+                    "response_type": "code",
+                    "scope": B2C_SCOPE,
+                    "state": state,
+                    "nonce": nonce,
+                    "code_challenge": code_challenge,
+                    "code_challenge_method": "S256",
+                    "response_mode": "query",
+                }
+
+                async with auth_session.get(
+                    B2C_AUTHORIZE_URL,
+                    params=auth_params,
+                    allow_redirects=True,
+                ) as resp:
+                    if resp.status != 200:
+                        raise NESAuthError(
+                            f"Failed to start auth flow: HTTP {resp.status}"
+                        )
+
+                    page_html = await resp.text()
+
+                    # Extract CSRF token and transaction ID from the page
+                    csrf_match = re.search(
+                        r'"csrf"\s*:\s*"([^"]+)"', page_html
                     )
-                if resp.status != 200:
-                    raise NESAuthError(
-                        f"Authentication failed with status {resp.status}"
+                    trans_match = re.search(
+                        r'"transId"\s*:\s*"([^"]+)"', page_html
                     )
 
-                result = await resp.json()
-                self._access_token = result["access_token"]
-                self._refresh_token = result.get("refresh_token")
-                expires_in = result.get("expires_in", 3600)
-                self._token_expiry = dt_util.utcnow() + timedelta(seconds=expires_in)
-                LOGGER.debug("Successfully authenticated with NES")
+                    if not csrf_match or not trans_match:
+                        LOGGER.debug(
+                            "Could not find CSRF/transId in page. "
+                            "Page length: %d, URL: %s",
+                            len(page_html),
+                            str(resp.url),
+                        )
+                        raise NESAuthError(
+                            "Failed to extract auth parameters from login page"
+                        )
+
+                    csrf_token = csrf_match.group(1)
+                    trans_id = trans_match.group(1)
+
+                LOGGER.debug(
+                    "Got CSRF token and transId, submitting credentials"
+                )
+
+                # Step 2: Submit credentials to SelfAsserted endpoint
+                self_asserted_params = {
+                    "tx": trans_id,
+                    "p": "B2C_1A_NES_SignUpOrSignIn",
+                }
+
+                login_data = {
+                    "request_type": "RESPONSE",
+                    "signInName": self._username,
+                    "password": self._password,
+                }
+
+                headers = {
+                    "X-CSRF-TOKEN": csrf_token,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                }
+
+                async with auth_session.post(
+                    B2C_SELF_ASSERTED_URL,
+                    params=self_asserted_params,
+                    data=login_data,
+                    headers=headers,
+                    allow_redirects=False,
+                ) as resp:
+                    resp_text = await resp.text()
+
+                    # B2C returns 200 with error messages for bad credentials
+                    if resp.status == 200 and '"status":"FAIL"' in resp_text:
+                        raise NESAuthError("Invalid email or password")
+                    if (
+                        resp.status == 200
+                        and '"status":"200"' not in resp_text
+                    ):
+                        LOGGER.debug(
+                            "SelfAsserted response: %s", resp_text[:500]
+                        )
+                        raise NESAuthError(
+                            "Unexpected response from login submission"
+                        )
+
+                LOGGER.debug(
+                    "Credentials accepted, getting authorization code"
+                )
+
+                # Step 3: Get the authorization code from confirmed endpoint
+                confirmed_params = {
+                    "rememberMe": "false",
+                    "csrf_token": csrf_token,
+                    "tx": trans_id,
+                    "p": "B2C_1A_NES_SignUpOrSignIn",
+                }
+
+                async with auth_session.get(
+                    B2C_CONFIRMED_URL,
+                    params=confirmed_params,
+                    allow_redirects=False,
+                ) as resp:
+                    if resp.status not in (302, 303):
+                        raise NESAuthError(
+                            f"Expected redirect from confirmed endpoint, "
+                            f"got HTTP {resp.status}"
+                        )
+
+                    location = resp.headers.get("Location", "")
+                    parsed = urlparse(location)
+                    query_params = parse_qs(parsed.query)
+
+                    if "error" in query_params:
+                        error_desc = query_params.get(
+                            "error_description", ["Unknown error"]
+                        )[0]
+                        raise NESAuthError(f"Auth error: {error_desc}")
+
+                    if "code" not in query_params:
+                        LOGGER.debug(
+                            "Redirect location: %s", location[:200]
+                        )
+                        raise NESAuthError(
+                            "No authorization code in redirect"
+                        )
+
+                    auth_code = query_params["code"][0]
+
+                LOGGER.debug("Got authorization code, exchanging for tokens")
+
+                # Step 4: Exchange authorization code for tokens
+                token_data = {
+                    "grant_type": "authorization_code",
+                    "client_id": B2C_CLIENT_ID,
+                    "code": auth_code,
+                    "redirect_uri": B2C_REDIRECT_URI,
+                    "code_verifier": code_verifier,
+                    "scope": B2C_SCOPE,
+                }
+
+                async with auth_session.post(
+                    B2C_TOKEN_URL, data=token_data
+                ) as resp:
+                    if resp.status != 200:
+                        error_body = await resp.text()
+                        LOGGER.debug(
+                            "Token exchange failed: %s", error_body[:500]
+                        )
+                        raise NESAuthError(
+                            f"Token exchange failed: HTTP {resp.status}"
+                        )
+
+                    result = await resp.json()
+                    self._access_token = result["access_token"]
+                    self._refresh_token = result.get("refresh_token")
+                    expires_in = result.get("expires_in", 3600)
+                    self._token_expiry = (
+                        dt_util.utcnow() + timedelta(seconds=expires_in)
+                    )
+                    LOGGER.debug("Successfully authenticated with NES")
 
         except aiohttp.ClientError as err:
             raise NESConnectionError(
@@ -198,7 +373,7 @@ class NESApiClient:
         await self._async_ensure_token()
 
         if end_date is None:
-            end_date = datetime.now()
+            end_date = dt_util.utcnow()
         if start_date is None:
             start_date = end_date - timedelta(days=30)
 
