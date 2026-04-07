@@ -415,7 +415,16 @@ class NESApiClient:
             async with self._session.post(
                 url, headers=self._auth_headers(), json={}
             ) as resp:
+                LOGGER.warning(
+                    "Customer API: status=%d, content_type=%s",
+                    resp.status,
+                    resp.headers.get("Content-Type", ""),
+                )
                 if resp.status == 401:
+                    resp_text = await resp.text()
+                    LOGGER.warning(
+                        "Customer API 401: %s", resp_text[:300]
+                    )
                     # Token may be invalid, try re-auth
                     await self.async_authenticate()
                     async with self._session.post(
