@@ -330,14 +330,21 @@ class NESApiClient:
                         "Token response keys: %s",
                         list(result.keys()) if isinstance(result, dict) else type(result),
                     )
-                    if "access_token" not in result:
+
+                    # B2C may return access_token, id_token, or both.
+                    # NES portal accepts id_token as bearer token.
+                    token = result.get("access_token") or result.get("id_token")
+                    if not token:
                         raise NESAuthError(
-                            f"Token response missing access_token: "
-                            f"{str(result)[:200]}"
+                            f"Token response missing access_token and "
+                            f"id_token: {list(result.keys())}"
                         )
-                    self._access_token = result["access_token"]
+                    self._access_token = token
                     self._refresh_token = result.get("refresh_token")
-                    expires_in = result.get("expires_in", 3600)
+                    expires_in = result.get(
+                        "expires_in",
+                        result.get("id_token_expires_in", 3600),
+                    )
                     self._token_expiry = (
                         dt_util.utcnow() + timedelta(seconds=expires_in)
                     )
