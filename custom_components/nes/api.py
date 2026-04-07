@@ -339,16 +339,52 @@ class NESApiClient:
                             f"Token response missing access_token and "
                             f"id_token: {list(result.keys())}"
                         )
-                    self._access_token = token
                     self._refresh_token = result.get("refresh_token")
-                    expires_in = result.get(
-                        "expires_in",
-                        result.get("id_token_expires_in", 3600),
+
+                # Step 5: Exchange B2C id_token for NES API token
+                jwt_url = (
+                    f"{API_BASE_URL}/rest/auth/jwt"
+                    f"?id_token={token}"
+                )
+
+                async with self._session.get(jwt_url) as resp:
+                    LOGGER.warning(
+                        "Step 5 JWT exchange: status=%d, "
+                        "content_type=%s",
+                        resp.status,
+                        resp.headers.get("Content-Type", ""),
                     )
+
+                    if resp.status != 200:
+                        body = await resp.text()
+                        LOGGER.warning(
+                            "Step 5 failed: %s", body[:300]
+                        )
+                        raise NESAuthError(
+                            f"NES JWT exchange failed: HTTP {resp.status}"
+                        )
+
+                    nes_result = await resp.json()
+                    nes_token = nes_result.get("access_token")
+                    if not nes_token:
+                        LOGGER.warning(
+                            "Step 5 response keys: %s",
+                            list(nes_result.keys())
+                            if isinstance(nes_result, dict)
+                            else str(nes_result)[:200],
+                        )
+                        raise NESAuthError(
+                            "NES JWT exchange missing access_token"
+                        )
+
+                    self._access_token = nes_token
+                    expires_in = nes_result.get("expires_in", 3600)
                     self._token_expiry = (
                         dt_util.utcnow() + timedelta(seconds=expires_in)
                     )
-                    LOGGER.warning("Successfully authenticated with NES")
+                    LOGGER.warning(
+                        "Successfully authenticated with NES"
+                    )
 
         except aiohttp.ClientError as err:
             raise NESConnectionError(

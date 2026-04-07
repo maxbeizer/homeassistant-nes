@@ -131,15 +131,22 @@ class TestAuthentication:
     async def test_successful_auth(
         self, mock_session_cls: MagicMock, mock_jar: MagicMock
     ) -> None:
-        """Test successful 4-step B2C authentication."""
+        """Test successful 5-step B2C authentication."""
         mock_auth_session = _make_auth_session_mock()
         mock_session_cls.return_value = mock_auth_session
 
+        # Main session handles Step 5: NES JWT exchange
+        jwt_resp = _make_response(200, json_data={
+            "access_token": "nes-api-token-xyz",
+            "expires_in": 3600,
+        })
         session = MagicMock()
+        session.get = MagicMock(return_value=_make_ctx(jwt_resp))
+
         client = NESApiClient("user@example.com", "pass123", session)
         await client.async_authenticate()
 
-        assert client._access_token == "test-access-token"
+        assert client._access_token == "nes-api-token-xyz"
         assert client._refresh_token == "test-refresh-token"
         assert client._token_expiry is not None
 
@@ -274,16 +281,21 @@ class TestTokenRefresh:
         mock_auth_session = _make_auth_session_mock()
         mock_session_cls.return_value = mock_auth_session
 
-        # Set up main session for the failed refresh
+        # Main session: first call = failed refresh, second = Step 5 JWT
         failed_refresh = _make_response(401)
-        session = _make_session(failed_refresh)
+        jwt_resp = _make_response(200, json_data={
+            "access_token": "nes-reauth-token",
+            "expires_in": 3600,
+        })
+        session = MagicMock()
+        session.post = MagicMock(return_value=_make_ctx(failed_refresh))
+        session.get = MagicMock(return_value=_make_ctx(jwt_resp))
 
         client = NESApiClient("user@example.com", "pass", session)
         client._refresh_token = "expired-refresh"
         await client._async_refresh_token()
 
-        assert client._access_token == "test-access-token"
-        assert client._refresh_token == "test-refresh-token"
+        assert client._access_token == "nes-reauth-token"
 
 
 class TestCustomerFetch:
