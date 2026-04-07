@@ -147,7 +147,8 @@ class NESApiClient:
                     trans_id = trans_match.group(1)
 
                 LOGGER.debug(
-                    "Got CSRF token and transId, submitting credentials"
+                    "Step 1 complete: got CSRF token (%d chars) and transId",
+                    len(csrf_token),
                 )
 
                 # Step 2: Submit credentials to SelfAsserted endpoint
@@ -164,7 +165,10 @@ class NESApiClient:
 
                 headers = {
                     "X-CSRF-TOKEN": csrf_token,
-                    "Content-Type": "application/x-www-form-urlencoded",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Content-Type":
+                        "application/x-www-form-urlencoded; charset=UTF-8",
+                    "Origin": "https://pdnesb2c.b2clogin.com",
                 }
 
                 async with auth_session.post(
@@ -176,23 +180,40 @@ class NESApiClient:
                 ) as resp:
                     resp_text = await resp.text()
 
-                    # B2C returns 200 with error messages for bad credentials
+                    LOGGER.debug(
+                        "Step 2 SelfAsserted: status=%d, "
+                        "response_length=%d, is_json=%s, snippet=%s",
+                        resp.status,
+                        len(resp_text),
+                        resp_text.startswith("{"),
+                        resp_text[:200],
+                    )
+
+                    # B2C returns 200 with JSON for AJAX requests
                     if resp.status == 200 and '"status":"FAIL"' in resp_text:
                         raise NESAuthError("Invalid email or password")
-                    if (
-                        resp.status == 200
-                        and '"status":"200"' not in resp_text
-                    ):
-                        LOGGER.debug(
-                            "SelfAsserted response: %s", resp_text[:500]
+                    if resp.status == 200 and '"status":"200"' in resp_text:
+                        LOGGER.debug("Step 2 complete: credentials accepted")
+                    elif resp.status == 200 and resp_text.startswith("<!"):
+                        # Got HTML instead of JSON — B2C didn't treat
+                        # this as an AJAX request. Log details for debugging.
+                        LOGGER.warning(
+                            "B2C returned HTML instead of JSON from "
+                            "SelfAsserted. This usually means the session "
+                            "cookies or CSRF token were not properly sent. "
+                            "Response length: %d",
+                            len(resp_text),
                         )
                         raise NESAuthError(
-                            "Unexpected response from login submission"
+                            "Login page returned instead of API response — "
+                            "session may have expired"
+                        )
+                    elif resp.status != 200:
+                        raise NESAuthError(
+                            f"SelfAsserted returned HTTP {resp.status}"
                         )
 
-                LOGGER.debug(
-                    "Credentials accepted, getting authorization code"
-                )
+                LOGGER.debug("Step 2 done, requesting authorization code")
 
                 # Step 3: Get the authorization code from confirmed endpoint
                 confirmed_params = {
@@ -207,7 +228,21 @@ class NESApiClient:
                     params=confirmed_params,
                     allow_redirects=False,
                 ) as resp:
+                    LOGGER.debug(
+                        "Step 3 confirmed: status=%d, "
+                        "has_location=%s",
+                        resp.status,
+                        "Location" in resp.headers,
+                    )
+
                     if resp.status not in (302, 303):
+                        body = await resp.text()
+                        LOGGER.debug(
+                            "Step 3 unexpected response: status=%d, "
+                            "body=%s",
+                            resp.status,
+                            body[:300],
+                        )
                         raise NESAuthError(
                             f"Expected redirect from confirmed endpoint, "
                             f"got HTTP {resp.status}"
@@ -233,7 +268,10 @@ class NESApiClient:
 
                     auth_code = query_params["code"][0]
 
-                LOGGER.debug("Got authorization code, exchanging for tokens")
+                LOGGER.debug(
+                    "Step 3 complete: got authorization code (%d chars)",
+                    len(auth_code),
+                )
 
                 # Step 4: Exchange authorization code for tokens
                 token_data = {
