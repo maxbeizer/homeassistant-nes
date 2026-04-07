@@ -24,11 +24,17 @@ def _make_response(
     headers: dict | None = None,
 ) -> MagicMock:
     """Create a mock aiohttp response."""
+    import json as json_mod
+
     resp = MagicMock(spec=aiohttp.ClientResponse)
     resp.status = status
     resp.json = AsyncMock(return_value=json_data if json_data is not None else {})
+    # Set text to JSON-serialized data if json_data provided and no explicit text
+    if json_data is not None and not text:
+        text = json_mod.dumps(json_data)
     resp.text = AsyncMock(return_value=text)
     resp.headers = headers or {}
+    resp.raw_headers = []
     resp.url = "https://example.com"
     return resp
 
@@ -81,11 +87,17 @@ def _make_auth_session_mock(
 
     # Step 1: GET /authorize → login page
     authorize_resp = _make_response(login_page_status, text=login_page_html)
+    # Add raw Set-Cookie headers for manual cookie handling
+    authorize_resp.raw_headers = [
+        (b"Set-Cookie", b"x-ms-cpim-csrf=test-csrf-cookie; path=/; secure"),
+        (b"Set-Cookie", b"x-ms-cpim-trans=test-trans-cookie; path=/; secure"),
+    ]
 
     # Step 2: POST /SelfAsserted → credentials
     self_asserted_resp = _make_response(
         self_asserted_status, text=self_asserted_text
     )
+    self_asserted_resp.raw_headers = []
 
     # Step 3: GET /confirmed → redirect with code
     confirmed_resp = _make_response(

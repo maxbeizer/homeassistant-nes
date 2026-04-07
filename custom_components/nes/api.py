@@ -303,16 +303,38 @@ class NESApiClient:
                 async with auth_session.post(
                     B2C_TOKEN_URL, data=token_data
                 ) as resp:
+                    resp_text = await resp.text()
+                    LOGGER.debug(
+                        "Step 4 token exchange: status=%d, "
+                        "content_type=%s, length=%d, snippet=%s",
+                        resp.status,
+                        resp.headers.get("Content-Type", ""),
+                        len(resp_text),
+                        resp_text[:300],
+                    )
+
                     if resp.status != 200:
-                        error_body = await resp.text()
-                        LOGGER.debug(
-                            "Token exchange failed: %s", error_body[:500]
-                        )
                         raise NESAuthError(
                             f"Token exchange failed: HTTP {resp.status}"
                         )
 
-                    result = await resp.json()
+                    try:
+                        import json as json_mod
+                        result = json_mod.loads(resp_text)
+                    except (ValueError, TypeError) as err:
+                        raise NESAuthError(
+                            f"Token response is not valid JSON"
+                        ) from err
+
+                    LOGGER.debug(
+                        "Token response keys: %s",
+                        list(result.keys()) if isinstance(result, dict) else type(result),
+                    )
+                    if "access_token" not in result:
+                        raise NESAuthError(
+                            f"Token response missing access_token: "
+                            f"{str(result)[:200]}"
+                        )
                     self._access_token = result["access_token"]
                     self._refresh_token = result.get("refresh_token")
                     expires_in = result.get("expires_in", 3600)
