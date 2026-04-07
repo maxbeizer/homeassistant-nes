@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
-import os
-import base64
-from datetime import datetime, timedelta
+import asyncio
+from datetime import timedelta
 from typing import Any
 
 import aiohttp
+
+from homeassistant.util import dt as dt_util
 
 from .const import (
     API_BASE_URL,
@@ -52,6 +52,7 @@ class NESApiClient:
         self._token_expiry: datetime | None = None
         self._account_context: dict[str, Any] | None = None
         self._customer_id: str | None = None
+        self._token_lock = asyncio.Lock()
 
     @property
     def customer_id(self) -> str | None:
@@ -60,15 +61,6 @@ class NESApiClient:
 
     async def async_authenticate(self) -> None:
         """Authenticate with Azure AD B2C using ROPC flow."""
-        code_verifier = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
-        code_challenge = (
-            base64.urlsafe_b64encode(
-                hashlib.sha256(code_verifier.encode()).digest()
-            )
-            .rstrip(b"=")
-            .decode()
-        )
-
         data = {
             "grant_type": "password",
             "client_id": B2C_CLIENT_ID,
@@ -76,8 +68,6 @@ class NESApiClient:
             "password": self._password,
             "scope": B2C_SCOPE,
             "redirect_uri": B2C_REDIRECT_URI,
-            "code_challenge": code_challenge,
-            "code_challenge_method": "S256",
         }
 
         try:
@@ -98,7 +88,7 @@ class NESApiClient:
                 self._access_token = result["access_token"]
                 self._refresh_token = result.get("refresh_token")
                 expires_in = result.get("expires_in", 3600)
-                self._token_expiry = datetime.now() + timedelta(seconds=expires_in)
+                self._token_expiry = dt_util.utcnow() + timedelta(seconds=expires_in)
                 LOGGER.debug("Successfully authenticated with NES")
 
         except aiohttp.ClientError as err:
@@ -131,7 +121,7 @@ class NESApiClient:
                 self._access_token = result["access_token"]
                 self._refresh_token = result.get("refresh_token", self._refresh_token)
                 expires_in = result.get("expires_in", 3600)
-                self._token_expiry = datetime.now() + timedelta(seconds=expires_in)
+                self._token_expiry = dt_util.utcnow() + timedelta(seconds=expires_in)
                 LOGGER.debug("Successfully refreshed token")
 
         except aiohttp.ClientError:
@@ -141,13 +131,16 @@ class NESApiClient:
 
     async def _async_ensure_token(self) -> None:
         """Ensure we have a valid access token."""
-        if self._access_token is None:
-            await self.async_authenticate()
-        elif self._token_expiry and datetime.now() >= self._token_expiry:
-            await self._async_refresh_token()
+        async with self._token_lock:
+            if self._access_token is None:
+                await self.async_authenticate()
+            elif self._token_expiry and dt_util.utcnow() >= self._token_expiry:
+                await self._async_refresh_token()
 
     def _auth_headers(self) -> dict[str, str]:
         """Return authorization headers."""
+        if not self._access_token:
+            raise NESAuthError("No access token available")
         return {
             "Authorization": f"Bearer {self._access_token}",
             "Content-Type": "application/json",
@@ -176,6 +169,11 @@ class NESApiClient:
                     result = await resp.json()
 
             if isinstance(result, list) and result:
+                if len(result) > 1:
+                    LOGGER.warning(
+                        "Multiple NES accounts found, using first: %s",
+                        [a.get("customerId") for a in result],
+                    )
                 account = result[0]
             elif isinstance(result, dict):
                 account = result

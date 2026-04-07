@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.loader import async_get_loaded_integration
 
-from .api import NESApiClient
+from .api import NESApiClient, NESAuthError, NESConnectionError
 from .coordinator import NESDataUpdateCoordinator
 from .data import NESConfigEntry, NESData
 
@@ -23,8 +24,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: NESConfigEntry) -> bool:
     )
 
     # Authenticate and fetch account info
-    await client.async_authenticate()
-    await client.async_get_customer()
+    try:
+        await client.async_authenticate()
+        await client.async_get_customer()
+    except NESAuthError as err:
+        raise ConfigEntryAuthFailed(
+            f"Authentication failed: {err}"
+        ) from err
+    except NESConnectionError as err:
+        raise ConfigEntryNotReady(
+            f"Cannot connect to NES: {err}"
+        ) from err
 
     coordinator = NESDataUpdateCoordinator(hass, client)
     await coordinator.async_config_entry_first_refresh()

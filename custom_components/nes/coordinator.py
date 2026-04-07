@@ -14,6 +14,16 @@ from .api import NESApiClient, NESAuthError, NESConnectionError
 from .const import LOGGER, UPDATE_INTERVAL_HOURS
 
 
+def _safe_float_or_zero(value: Any) -> float:
+    """Safely convert a value to float, defaulting to 0.0."""
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return 0.0
+
+
 class NESDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Coordinator to manage fetching NES usage data."""
 
@@ -58,10 +68,10 @@ class NESDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Sum up monthly totals
         monthly_total_kwh = sum(
-            float(day.get("usageConsumptionValue", 0) or 0) for day in sorted_data
+            _safe_float_or_zero(day.get("usageConsumptionValue")) for day in sorted_data
         )
         monthly_total_cost = sum(
-            float(day.get("billedCharge", 0) or 0) for day in sorted_data
+            _safe_float_or_zero(day.get("billedCharge")) for day in sorted_data
         )
 
         return {
