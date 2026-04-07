@@ -2,6 +2,9 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz/)
 
+> [!CAUTION]
+> This is still in early development and may never work
+
 A custom Home Assistant integration for [Nashville Electric Service (NES)](https://www.nespower.com/) that provides energy usage data from the NES customer portal.
 
 ## Features
