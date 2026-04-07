@@ -1,0 +1,13 @@
+{
+  "domain": "nes",
+  "name": "Nashville Electric Service",
+  "codeowners": ["@maxbeizer"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/maxbeizer/homeassistant-nes",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/maxbeizer/homeassistant-nes/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

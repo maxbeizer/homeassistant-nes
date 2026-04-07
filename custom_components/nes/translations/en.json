@@ -1,0 +1,49 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Nashville Electric Service",
+        "description": "Enter your NES customer portal credentials (myaccount.nespower.com).",
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate with NES",
+        "description": "Your NES credentials have expired. Please re-enter them.",
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email or password.",
+      "cannot_connect": "Unable to connect to NES. Please try again later.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This NES account is already configured."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "daily_energy_usage": {
+        "name": "Daily energy usage"
+      },
+      "monthly_energy_usage": {
+        "name": "Monthly energy usage"
+      },
+      "daily_energy_cost": {
+        "name": "Daily energy cost"
+      },
+      "daily_high_temp": {
+        "name": "Daily high temperature"
+      },
+      "daily_low_temp": {
+        "name": "Daily low temperature"
+      }
+    }
+  }
+}
