@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
@@ -14,7 +13,6 @@ from custom_components.nes.api import (
     NESConnectionError,
     NESApiError,
 )
-from custom_components.nes.const import B2C_TOKEN_URL
 
 
 def _make_response(
@@ -29,7 +27,6 @@ def _make_response(
     resp = MagicMock(spec=aiohttp.ClientResponse)
     resp.status = status
     resp.json = AsyncMock(return_value=json_data if json_data is not None else {})
-    # Set text to JSON-serialized data if json_data provided and no explicit text
     if json_data is not None and not text:
         text = json_mod.dumps(json_data)
     resp.text = AsyncMock(return_value=text)
@@ -50,206 +47,73 @@ def _make_ctx(resp: MagicMock) -> MagicMock:
 def _make_session(*responses: MagicMock) -> MagicMock:
     """Create a mock aiohttp session that yields responses in order."""
     session = MagicMock()
-    ctx_managers = []
-    for resp in responses:
-        ctx_managers.append(_make_ctx(resp))
-
+    ctx_managers = [_make_ctx(r) for r in responses]
     session.post = MagicMock(side_effect=ctx_managers)
     session.get = MagicMock(side_effect=[])
     return session
 
 
-# HTML returned by B2C authorize page with CSRF and transId
-B2C_LOGIN_PAGE_HTML = """
-<html>
-<script>var SETTINGS = {"csrf": "test-csrf-token-123", "transId": "test-trans-id-456"};</script>
-</html>
-"""
-
-
-def _make_auth_session_mock(
-    login_page_status: int = 200,
-    login_page_html: str = B2C_LOGIN_PAGE_HTML,
-    self_asserted_status: int = 200,
-    self_asserted_text: str = '{"status":"200"}',
-    confirmed_status: int = 302,
-    confirmed_location: str = "https://myaccount.nespower.com/eportal?code=auth-code-789&state=abc",
-    token_status: int = 200,
-    token_json: dict | None = None,
-) -> MagicMock:
-    """Create a mock auth session for the 4-step B2C flow."""
-    if token_json is None:
-        token_json = {
-            "access_token": "test-access-token",
-            "refresh_token": "test-refresh-token",
-            "expires_in": 3600,
-        }
-
-    # Step 1: GET /authorize → login page
-    authorize_resp = _make_response(login_page_status, text=login_page_html)
-    # Add raw Set-Cookie headers for manual cookie handling
-    authorize_resp.raw_headers = [
-        (b"Set-Cookie", b"x-ms-cpim-csrf=test-csrf-cookie; path=/; secure"),
-        (b"Set-Cookie", b"x-ms-cpim-trans=test-trans-cookie; path=/; secure"),
-    ]
-
-    # Step 2: POST /SelfAsserted → credentials
-    self_asserted_resp = _make_response(
-        self_asserted_status, text=self_asserted_text
-    )
-    self_asserted_resp.raw_headers = []
-
-    # Step 3: GET /confirmed → redirect with code
-    confirmed_resp = _make_response(
-        confirmed_status,
-        headers={"Location": confirmed_location},
-    )
-
-    # Step 4: POST /token → tokens
-    token_resp = _make_response(token_status, json_data=token_json)
-
-    mock_session = MagicMock()
-    mock_session.get = MagicMock(
-        side_effect=[_make_ctx(authorize_resp), _make_ctx(confirmed_resp)]
-    )
-    mock_session.post = MagicMock(
-        side_effect=[_make_ctx(self_asserted_resp), _make_ctx(token_resp)]
-    )
-
-    # Make it work as async context manager
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
-
-    return mock_session
-
-
 class TestAuthentication:
-    """Test NES authentication via B2C Authorization Code + PKCE."""
+    """Test NES OAuth2 password grant authentication."""
 
-    @patch("custom_components.nes.api.aiohttp.CookieJar")
-    @patch("custom_components.nes.api.aiohttp.ClientSession")
-    async def test_successful_auth(
-        self, mock_session_cls: MagicMock, mock_jar: MagicMock
-    ) -> None:
-        """Test successful 5-step B2C authentication."""
-        mock_auth_session = _make_auth_session_mock()
-        mock_session_cls.return_value = mock_auth_session
-
-        # Main session handles Step 5: NES JWT exchange
-        jwt_resp = _make_response(200, json_data={
+    async def test_successful_auth(self) -> None:
+        """Test successful authentication."""
+        token_resp = _make_response(200, {
             "access_token": "nes-api-token-xyz",
+            "refresh_token": "refresh-abc",
             "expires_in": 3600,
         })
-        session = MagicMock()
-        session.get = MagicMock(return_value=_make_ctx(jwt_resp))
+        session = _make_session(token_resp)
 
         client = NESApiClient("user@example.com", "pass123", session)
         await client.async_authenticate()
 
         assert client._access_token == "nes-api-token-xyz"
-        assert client._refresh_token == "test-refresh-token"
+        assert client._refresh_token == "refresh-abc"
         assert client._token_expiry is not None
 
-    @patch("custom_components.nes.api.aiohttp.CookieJar")
-    @patch("custom_components.nes.api.aiohttp.ClientSession")
-    async def test_auth_invalid_credentials(
-        self, mock_session_cls: MagicMock, mock_jar: MagicMock
-    ) -> None:
+    async def test_auth_invalid_credentials(self) -> None:
         """Test authentication with bad credentials."""
-        mock_auth_session = _make_auth_session_mock(
-            self_asserted_text='{"status":"FAIL","message":"Invalid credentials"}',
-        )
-        mock_session_cls.return_value = mock_auth_session
+        error_resp = _make_response(400, {
+            "error": "invalid_grant",
+            "error_description": "Unable to authenticate user",
+        })
+        session = _make_session(error_resp)
 
-        session = MagicMock()
         client = NESApiClient("bad@example.com", "wrong", session)
-        with pytest.raises(NESAuthError, match="Invalid email or password"):
+        with pytest.raises(NESAuthError, match="Authentication failed"):
             await client.async_authenticate()
 
-    @patch("custom_components.nes.api.aiohttp.CookieJar")
-    @patch("custom_components.nes.api.aiohttp.ClientSession")
-    async def test_auth_login_page_failure(
-        self, mock_session_cls: MagicMock, mock_jar: MagicMock
-    ) -> None:
-        """Test authentication when login page returns error."""
-        mock_auth_session = _make_auth_session_mock(login_page_status=500)
-        mock_session_cls.return_value = mock_auth_session
+    async def test_auth_server_error(self) -> None:
+        """Test authentication with server error."""
+        error_resp = _make_response(500)
+        session = _make_session(error_resp)
 
-        session = MagicMock()
         client = NESApiClient("user@example.com", "pass", session)
-        with pytest.raises(NESAuthError, match="Failed to start auth flow"):
+        with pytest.raises(NESAuthError, match="HTTP 500"):
             await client.async_authenticate()
 
-    @patch("custom_components.nes.api.aiohttp.CookieJar")
-    @patch("custom_components.nes.api.aiohttp.ClientSession")
-    async def test_auth_missing_csrf(
-        self, mock_session_cls: MagicMock, mock_jar: MagicMock
-    ) -> None:
-        """Test authentication when CSRF token is missing from page."""
-        mock_auth_session = _make_auth_session_mock(
-            login_page_html="<html>No tokens here</html>"
-        )
-        mock_session_cls.return_value = mock_auth_session
-
-        session = MagicMock()
-        client = NESApiClient("user@example.com", "pass", session)
-        with pytest.raises(NESAuthError, match="Failed to extract auth"):
-            await client.async_authenticate()
-
-    @patch("custom_components.nes.api.aiohttp.CookieJar")
-    @patch("custom_components.nes.api.aiohttp.ClientSession")
-    async def test_auth_no_code_in_redirect(
-        self, mock_session_cls: MagicMock, mock_jar: MagicMock
-    ) -> None:
-        """Test authentication when redirect has no auth code."""
-        mock_auth_session = _make_auth_session_mock(
-            confirmed_location="https://myaccount.nespower.com/eportal?error=access_denied",
-        )
-        mock_session_cls.return_value = mock_auth_session
-
-        session = MagicMock()
-        client = NESApiClient("user@example.com", "pass", session)
-        with pytest.raises(NESAuthError, match="Auth error"):
-            await client.async_authenticate()
-
-    @patch("custom_components.nes.api.aiohttp.CookieJar")
-    @patch("custom_components.nes.api.aiohttp.ClientSession")
-    async def test_auth_token_exchange_failure(
-        self, mock_session_cls: MagicMock, mock_jar: MagicMock
-    ) -> None:
-        """Test authentication when token exchange fails."""
-        mock_auth_session = _make_auth_session_mock(
-            token_status=400,
-            token_json={"error": "invalid_grant"},
-        )
-        mock_session_cls.return_value = mock_auth_session
-
-        session = MagicMock()
-        client = NESApiClient("user@example.com", "pass", session)
-        with pytest.raises(NESAuthError, match="Token exchange failed"):
-            await client.async_authenticate()
-
-    @patch("custom_components.nes.api.aiohttp.CookieJar")
-    @patch("custom_components.nes.api.aiohttp.ClientSession")
-    async def test_auth_connection_error(
-        self, mock_session_cls: MagicMock, mock_jar: MagicMock
-    ) -> None:
+    async def test_auth_connection_error(self) -> None:
         """Test authentication with network failure."""
-        mock_auth_session = MagicMock()
-        mock_auth_session.__aenter__ = AsyncMock(return_value=mock_auth_session)
-        mock_auth_session.__aexit__ = AsyncMock(return_value=False)
-
+        session = MagicMock()
         ctx = AsyncMock()
         ctx.__aenter__ = AsyncMock(
             side_effect=aiohttp.ClientError("Network down")
         )
         ctx.__aexit__ = AsyncMock(return_value=False)
-        mock_auth_session.get = MagicMock(return_value=ctx)
-        mock_session_cls.return_value = mock_auth_session
+        session.post = MagicMock(return_value=ctx)
 
-        session = MagicMock()
         client = NESApiClient("user@example.com", "pass", session)
         with pytest.raises(NESConnectionError, match="Connection error"):
+            await client.async_authenticate()
+
+    async def test_auth_missing_access_token(self) -> None:
+        """Test auth when response is missing access_token."""
+        bad_resp = _make_response(200, {"token_type": "bearer"})
+        session = _make_session(bad_resp)
+
+        client = NESApiClient("user@example.com", "pass", session)
+        with pytest.raises(NESAuthError, match="missing access_token"):
             await client.async_authenticate()
 
 
@@ -272,30 +136,20 @@ class TestTokenRefresh:
         assert client._access_token == "new-token"
         assert client._refresh_token == "new-refresh"
 
-    @patch("custom_components.nes.api.aiohttp.CookieJar")
-    @patch("custom_components.nes.api.aiohttp.ClientSession")
-    async def test_refresh_falls_back_to_reauth(
-        self, mock_session_cls: MagicMock, mock_jar: MagicMock
-    ) -> None:
+    async def test_refresh_falls_back_to_reauth(self) -> None:
         """Test that failed refresh triggers full re-authentication."""
-        mock_auth_session = _make_auth_session_mock()
-        mock_session_cls.return_value = mock_auth_session
-
-        # Main session: first call = failed refresh, second = Step 5 JWT
         failed_refresh = _make_response(401)
-        jwt_resp = _make_response(200, json_data={
-            "access_token": "nes-reauth-token",
+        reauth_resp = _make_response(200, {
+            "access_token": "reauth-token",
             "expires_in": 3600,
         })
-        session = MagicMock()
-        session.post = MagicMock(return_value=_make_ctx(failed_refresh))
-        session.get = MagicMock(return_value=_make_ctx(jwt_resp))
+        session = _make_session(failed_refresh, reauth_resp)
 
         client = NESApiClient("user@example.com", "pass", session)
         client._refresh_token = "expired-refresh"
         await client._async_refresh_token()
 
-        assert client._access_token == "nes-reauth-token"
+        assert client._access_token == "reauth-token"
 
 
 class TestCustomerFetch:
