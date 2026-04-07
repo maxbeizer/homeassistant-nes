@@ -26,3 +26,6 @@ Thumbs.db
 
 # Home Assistant config
 config/
+.venv/
+.pytest_cache/
+__pycache__/
