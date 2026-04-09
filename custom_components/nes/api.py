@@ -82,7 +82,7 @@ class NESApiClient:
         try:
             # Step 1: Get B2C id_token
             id_token = await self._async_b2c_login()
-            LOGGER.debug("B2C login complete, exchanging for NES token")
+            LOGGER.warning("B2C login complete, exchanging for NES token")
 
             # Step 2: Exchange id_token for NES API token
             url = f"{API_BASE_URL}/rest/oauth/token"
@@ -126,7 +126,7 @@ class NESApiClient:
                 self._token_expiry = (
                     dt_util.utcnow() + timedelta(seconds=expires_in)
                 )
-                LOGGER.debug("Successfully authenticated with NES")
+                LOGGER.warning("Successfully authenticated with NES")
 
         except aiohttp.ClientError as err:
             raise NESConnectionError(
@@ -328,7 +328,7 @@ class NESApiClient:
                 url, data=data, headers=headers
             ) as resp:
                 if resp.status != 200:
-                    LOGGER.debug("Token refresh failed, re-authenticating")
+                    LOGGER.warning("Token refresh failed, re-authenticating")
                     self._refresh_token = None
                     await self.async_authenticate()
                     return
@@ -338,10 +338,10 @@ class NESApiClient:
                 self._refresh_token = result.get("refresh_token", self._refresh_token)
                 expires_in = result.get("expires_in", 3600)
                 self._token_expiry = dt_util.utcnow() + timedelta(seconds=expires_in)
-                LOGGER.debug("Successfully refreshed token")
+                LOGGER.warning("Successfully refreshed token")
 
         except aiohttp.ClientError:
-            LOGGER.debug("Token refresh connection error, re-authenticating")
+            LOGGER.warning("Token refresh connection error, re-authenticating")
             self._refresh_token = None
             await self.async_authenticate()
 
