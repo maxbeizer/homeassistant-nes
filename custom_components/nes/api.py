@@ -75,32 +75,61 @@ class NESApiClient:
     async def async_authenticate(self) -> None:
         """Authenticate with NES via B2C SSO + OAuth2 token exchange.
 
-        Two-step flow:
+        Three-step flow:
         1. Azure AD B2C headless login → get id_token
-        2. POST /rest/oauth/token with logintype=sso → get NES API token
+        2. GET /rest/auth/jwt?id_token=... → get SSO session token (UUID)
+        3. POST /rest/oauth/token with logintype=sso → get NES API token
         """
         try:
             # Step 1: Get B2C id_token
             id_token = await self._async_b2c_login()
-            LOGGER.warning("B2C login complete, exchanging for NES token")
+            LOGGER.warning("B2C login complete, exchanging for SSO token")
 
-            # Step 2: Exchange id_token for NES API token
-            url = f"{API_BASE_URL}/rest/oauth/token"
-            data = (
-                f"grant_type=password"
-                f"&logintype=sso"
-                f"&usertoken={_urlencode(id_token)}"
-                f"&username={_urlencode(id_token)}"
-                f"&password=guest"
-            )
-            headers = {
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Authorization":
-                    "Basic d2ViQ2xpZW50SWRQYXNzd29yZDpzZWNyZXQ=",
+            # Step 2: Exchange id_token for SSO session token
+            # The /rest/auth/jwt endpoint creates a server-side session
+            # and redirects to /#/ssohome/<sso_token>
+            jwt_url = f"{API_BASE_URL}/rest/auth/jwt?id_token={id_token}"
+            browser_headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
             }
 
+            async with self._session.get(
+                jwt_url, headers=browser_headers, allow_redirects=False,
+            ) as resp:
+                if resp.status not in (302, 303):
+                    raise NESAuthError(
+                        f"JWT exchange failed: HTTP {resp.status}"
+                    )
+
+                location = resp.headers.get("Location", "")
+                sso_match = re.search(r"/ssohome/([a-f0-9-]+)", location)
+                if not sso_match:
+                    raise NESAuthError(
+                        "No SSO token in JWT redirect"
+                    )
+                sso_token = sso_match.group(1)
+
+            LOGGER.warning("Got SSO token, exchanging for API token")
+
+            # Step 3: Exchange SSO token for NES API token
+            url = f"{API_BASE_URL}/rest/oauth/token"
             async with self._session.post(
-                url, data=data, headers=headers
+                url,
+                data={
+                    "grant_type": "password",
+                    "logintype": "sso",
+                    "usertoken": sso_token,
+                    "username": sso_token,
+                    "password": "guest",
+                },
+                headers={
+                    "Authorization":
+                        "Basic d2ViQ2xpZW50SWRQYXNzd29yZDpzZWNyZXQ=",
+                    "User-Agent": browser_headers["User-Agent"],
+                },
             ) as resp:
                 if resp.status == 400:
                     error_body = await resp.json()
