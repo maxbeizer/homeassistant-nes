@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import base64
+import os
+import re
 from datetime import timedelta
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, parse_qs
 
 import aiohttp
 
@@ -15,6 +19,13 @@ from .const import (
     API_BASE_URL,
     API_ENDPOINT_CUSTOMER,
     API_ENDPOINT_USAGE,
+    B2C_AUTHORIZE_URL,
+    B2C_CLIENT_ID,
+    B2C_CONFIRMED_URL,
+    B2C_REDIRECT_URI,
+    B2C_SCOPE,
+    B2C_SELF_ASSERTED_URL,
+    B2C_TOKEN_URL,
     LOGGER,
 )
 
@@ -62,43 +73,46 @@ class NESApiClient:
         return self._customer_id
 
     async def async_authenticate(self) -> None:
-        """Authenticate with NES OAuth2 password grant.
+        """Authenticate with NES via B2C SSO + OAuth2 token exchange.
 
-        NES has its own OAuth2 server at /rest/oauth/token that accepts
-        direct username/password authentication with a fixed client secret.
+        Two-step flow:
+        1. Azure AD B2C headless login → get id_token
+        2. POST /rest/oauth/token with logintype=sso → get NES API token
         """
-        url = f"{API_BASE_URL}/rest/oauth/token"
-        data = (
-            f"grant_type=password"
-            f"&username={_urlencode(self._username)}"
-            f"&password={_urlencode(self._password)}"
-        )
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Authorization": "Basic d2ViQ2xpZW50SWRQYXNzd29yZDpzZWNyZXQ=",
-        }
-
         try:
+            # Step 1: Get B2C id_token
+            id_token = await self._async_b2c_login()
+            LOGGER.debug("B2C login complete, exchanging for NES token")
+
+            # Step 2: Exchange id_token for NES API token
+            url = f"{API_BASE_URL}/rest/oauth/token"
+            data = (
+                f"grant_type=password"
+                f"&logintype=sso"
+                f"&usertoken={_urlencode(id_token)}"
+                f"&username={_urlencode(id_token)}"
+                f"&password=guest"
+            )
+            headers = {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Authorization":
+                    "Basic d2ViQ2xpZW50SWRQYXNzd29yZDpzZWNyZXQ=",
+            }
+
             async with self._session.post(
                 url, data=data, headers=headers
             ) as resp:
-                LOGGER.warning(
-                    "OAuth token: status=%d, content_type=%s",
-                    resp.status,
-                    resp.headers.get("Content-Type", ""),
-                )
-
                 if resp.status == 400:
                     error_body = await resp.json()
                     error_desc = error_body.get(
                         "error_description", "Unknown error"
                     )
                     raise NESAuthError(
-                        f"Authentication failed: {error_desc}"
+                        f"NES token exchange failed: {error_desc}"
                     )
                 if resp.status != 200:
                     raise NESAuthError(
-                        f"Authentication failed: HTTP {resp.status}"
+                        f"NES token exchange failed: HTTP {resp.status}"
                     )
 
                 result = await resp.json()
@@ -112,12 +126,186 @@ class NESApiClient:
                 self._token_expiry = (
                     dt_util.utcnow() + timedelta(seconds=expires_in)
                 )
-                LOGGER.warning("Successfully authenticated with NES")
+                LOGGER.debug("Successfully authenticated with NES")
 
         except aiohttp.ClientError as err:
             raise NESConnectionError(
                 f"Connection error during authentication: {err}"
             ) from err
+
+    async def _async_b2c_login(self) -> str:
+        """Perform headless B2C login and return the id_token.
+
+        Cookies are managed manually because aiohttp quotes cookie
+        values containing +/=/; characters, which B2C cannot parse.
+        """
+        code_verifier, code_challenge = self._generate_pkce()
+        state = base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()
+        nonce = base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()
+
+        async with aiohttp.ClientSession(
+            cookie_jar=aiohttp.DummyCookieJar()
+        ) as auth_session:
+            # Step 1a: GET /authorize → login page with CSRF + cookies
+            auth_params = {
+                "client_id": B2C_CLIENT_ID,
+                "redirect_uri": B2C_REDIRECT_URI,
+                "response_type": "code",
+                "scope": B2C_SCOPE,
+                "state": state,
+                "nonce": nonce,
+                "code_challenge": code_challenge,
+                "code_challenge_method": "S256",
+                "response_mode": "query",
+            }
+
+            async with auth_session.get(
+                B2C_AUTHORIZE_URL, params=auth_params,
+            ) as resp:
+                if resp.status != 200:
+                    raise NESAuthError(
+                        f"B2C auth page failed: HTTP {resp.status}"
+                    )
+                page_html = await resp.text()
+
+                # Capture raw cookies (unquoted)
+                raw_cookies: dict[str, str] = {}
+                for hdr_key, hdr_val in resp.raw_headers:
+                    if hdr_key.lower() == b"set-cookie":
+                        cs = hdr_val.decode()
+                        raw_cookies[cs.split("=", 1)[0]] = (
+                            cs.split("=", 1)[1].split(";")[0]
+                        )
+
+                csrf_match = re.search(
+                    r'"csrf"\s*:\s*"([^"]+)"', page_html
+                )
+                trans_match = re.search(
+                    r'"transId"\s*:\s*"([^"]+)"', page_html
+                )
+                if not csrf_match or not trans_match:
+                    raise NESAuthError(
+                        "Failed to extract B2C auth parameters"
+                    )
+                csrf_token = csrf_match.group(1)
+                trans_id = trans_match.group(1)
+
+            cookie_header = "; ".join(
+                f"{k}={v}" for k, v in raw_cookies.items()
+            )
+
+            # Step 1b: POST /SelfAsserted → submit credentials
+            from yarl import URL
+
+            sa_url = (
+                f"{B2C_SELF_ASSERTED_URL}"
+                f"?tx={trans_id}&p=B2C_1A_NES_SignUpOrSignIn"
+            )
+            login_data = (
+                f"request_type=RESPONSE"
+                f"&signInName={_urlencode(self._username)}"
+                f"&password={_urlencode(self._password)}"
+            )
+            headers = {
+                "X-CSRF-TOKEN": csrf_token,
+                "X-Requested-With": "XMLHttpRequest",
+                "Content-Type":
+                    "application/x-www-form-urlencoded; charset=UTF-8",
+                "Cookie": cookie_header,
+            }
+
+            async with auth_session.post(
+                URL(sa_url, encoded=True),
+                data=login_data,
+                headers=headers,
+                allow_redirects=False,
+            ) as resp:
+                resp_text = await resp.text()
+                if resp.status == 200 and resp_text.startswith("{"):
+                    import json as json_mod
+                    result = json_mod.loads(resp_text)
+                    if str(result.get("status", "")) != "200":
+                        raise NESAuthError("Invalid email or password")
+                else:
+                    raise NESAuthError(
+                        "Unexpected B2C login response"
+                    )
+
+                # Capture new cookies
+                for hdr_key, hdr_val in resp.raw_headers:
+                    if hdr_key.lower() == b"set-cookie":
+                        cs = hdr_val.decode()
+                        raw_cookies[cs.split("=", 1)[0]] = (
+                            cs.split("=", 1)[1].split(";")[0]
+                        )
+
+            cookie_header = "; ".join(
+                f"{k}={v}" for k, v in raw_cookies.items()
+            )
+
+            # Step 1c: GET /confirmed → redirect with auth code
+            confirmed_url = (
+                f"{B2C_CONFIRMED_URL}"
+                f"?rememberMe=false"
+                f"&csrf_token={csrf_token}"
+                f"&tx={trans_id}"
+                f"&p=B2C_1A_NES_SignUpOrSignIn"
+            )
+
+            async with auth_session.get(
+                URL(confirmed_url, encoded=True),
+                headers={"Cookie": cookie_header},
+                allow_redirects=False,
+            ) as resp:
+                if resp.status not in (302, 303):
+                    raise NESAuthError(
+                        f"B2C confirm failed: HTTP {resp.status}"
+                    )
+                location = resp.headers.get("Location", "")
+                query_params = parse_qs(urlparse(location).query)
+                if "error" in query_params:
+                    raise NESAuthError(
+                        f"B2C error: {query_params.get('error_description', ['Unknown'])[0]}"
+                    )
+                if "code" not in query_params:
+                    raise NESAuthError("No auth code in B2C redirect")
+                auth_code = query_params["code"][0]
+
+            # Step 1d: Exchange auth code for id_token
+            token_data = {
+                "grant_type": "authorization_code",
+                "client_id": B2C_CLIENT_ID,
+                "code": auth_code,
+                "redirect_uri": B2C_REDIRECT_URI,
+                "code_verifier": code_verifier,
+                "scope": B2C_SCOPE,
+            }
+
+            async with auth_session.post(
+                B2C_TOKEN_URL, data=token_data
+            ) as resp:
+                if resp.status != 200:
+                    raise NESAuthError(
+                        f"B2C token exchange failed: HTTP {resp.status}"
+                    )
+                result = await resp.json()
+                id_token = result.get("id_token")
+                if not id_token:
+                    raise NESAuthError("B2C response missing id_token")
+                return id_token
+
+    @staticmethod
+    def _generate_pkce() -> tuple[str, str]:
+        """Generate PKCE code verifier and challenge."""
+        verifier = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
+        challenge = (
+            base64.urlsafe_b64encode(
+                hashlib.sha256(verifier.encode()).digest()
+            )
+            .rstrip(b"=")
+            .decode()
+        )
+        return verifier, challenge
 
     async def _async_refresh_token(self) -> None:
         """Refresh the access token."""
