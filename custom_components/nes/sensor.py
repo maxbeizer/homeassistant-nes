@@ -36,7 +36,9 @@ SENSOR_DESCRIPTIONS: tuple[NESSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL,
         suggested_display_precision=0,
-        value_fn=lambda data: _safe_float(data.get("latest", {}).get("billedConsumption")),
+        value_fn=lambda data: _safe_float(
+            data.get("latest", {}).get("billedConsumption")
+        ),
     ),
     NESSensorEntityDescription(
         key="monthly_energy_cost",

@@ -7,10 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from homeassistant.core import HomeAssistant
-
-from custom_components.nes.const import DOMAIN
-
 
 @pytest.fixture
 def mock_setup_entry() -> Generator[AsyncMock]:

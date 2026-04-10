@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
@@ -10,7 +10,6 @@ import pytest
 from custom_components.nes.api import (
     NESApiClient,
     NESAuthError,
-    NESConnectionError,
     NESApiError,
 )
 
@@ -71,11 +70,14 @@ class TestTokenRefresh:
 
     async def test_refresh_success(self) -> None:
         """Test successful token refresh."""
-        refresh_resp = _make_response(200, {
-            "access_token": "new-token",
-            "refresh_token": "new-refresh",
-            "expires_in": 3600,
-        })
+        refresh_resp = _make_response(
+            200,
+            {
+                "access_token": "new-token",
+                "refresh_token": "new-refresh",
+                "expires_in": 3600,
+            },
+        )
         session = MagicMock()
         session.post = MagicMock(return_value=_make_ctx(refresh_resp))
 

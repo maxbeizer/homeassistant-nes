@@ -7,7 +7,7 @@ import hashlib
 import base64
 import os
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote, urlparse, parse_qs
 
@@ -102,19 +102,17 @@ class NESApiClient:
             }
 
             async with self._session.get(
-                jwt_url, headers=browser_headers, allow_redirects=False,
+                jwt_url,
+                headers=browser_headers,
+                allow_redirects=False,
             ) as resp:
                 if resp.status not in (302, 303):
-                    raise NESAuthError(
-                        f"JWT exchange failed: HTTP {resp.status}"
-                    )
+                    raise NESAuthError(f"JWT exchange failed: HTTP {resp.status}")
 
                 location = resp.headers.get("Location", "")
                 sso_match = re.search(r"/ssohome/([a-f0-9-]+)", location)
                 if not sso_match:
-                    raise NESAuthError(
-                        "No SSO token in JWT redirect"
-                    )
+                    raise NESAuthError("No SSO token in JWT redirect")
                 sso_token = sso_match.group(1)
 
             LOGGER.debug("Got SSO token, exchanging for API token")
@@ -131,35 +129,24 @@ class NESApiClient:
                     "password": "guest",
                 },
                 headers={
-                    "Authorization":
-                        "Basic d2ViQ2xpZW50SWRQYXNzd29yZDpzZWNyZXQ=",
+                    "Authorization": "Basic d2ViQ2xpZW50SWRQYXNzd29yZDpzZWNyZXQ=",
                     "User-Agent": browser_headers["User-Agent"],
                 },
             ) as resp:
                 if resp.status == 400:
                     error_body = await resp.json()
-                    error_desc = error_body.get(
-                        "error_description", "Unknown error"
-                    )
-                    raise NESAuthError(
-                        f"NES token exchange failed: {error_desc}"
-                    )
+                    error_desc = error_body.get("error_description", "Unknown error")
+                    raise NESAuthError(f"NES token exchange failed: {error_desc}")
                 if resp.status != 200:
-                    raise NESAuthError(
-                        f"NES token exchange failed: HTTP {resp.status}"
-                    )
+                    raise NESAuthError(f"NES token exchange failed: HTTP {resp.status}")
 
                 result = await resp.json()
                 self._access_token = result.get("access_token")
                 if not self._access_token:
-                    raise NESAuthError(
-                        "Token response missing access_token"
-                    )
+                    raise NESAuthError("Token response missing access_token")
                 self._refresh_token = result.get("refresh_token")
                 expires_in = result.get("expires_in", 3600)
-                self._token_expiry = (
-                    dt_util.utcnow() + timedelta(seconds=expires_in)
-                )
+                self._token_expiry = dt_util.utcnow() + timedelta(seconds=expires_in)
                 LOGGER.debug("Successfully authenticated with NES")
 
         except aiohttp.ClientError as err:
@@ -194,12 +181,11 @@ class NESApiClient:
             }
 
             async with auth_session.get(
-                B2C_AUTHORIZE_URL, params=auth_params,
+                B2C_AUTHORIZE_URL,
+                params=auth_params,
             ) as resp:
                 if resp.status != 200:
-                    raise NESAuthError(
-                        f"B2C auth page failed: HTTP {resp.status}"
-                    )
+                    raise NESAuthError(f"B2C auth page failed: HTTP {resp.status}")
                 page_html = await resp.text()
 
                 # Capture raw cookies (unquoted)
@@ -207,33 +193,24 @@ class NESApiClient:
                 for hdr_key, hdr_val in resp.raw_headers:
                     if hdr_key.lower() == b"set-cookie":
                         cs = hdr_val.decode()
-                        raw_cookies[cs.split("=", 1)[0]] = (
-                            cs.split("=", 1)[1].split(";")[0]
-                        )
+                        raw_cookies[cs.split("=", 1)[0]] = cs.split("=", 1)[1].split(
+                            ";"
+                        )[0]
 
-                csrf_match = re.search(
-                    r'"csrf"\s*:\s*"([^"]+)"', page_html
-                )
-                trans_match = re.search(
-                    r'"transId"\s*:\s*"([^"]+)"', page_html
-                )
+                csrf_match = re.search(r'"csrf"\s*:\s*"([^"]+)"', page_html)
+                trans_match = re.search(r'"transId"\s*:\s*"([^"]+)"', page_html)
                 if not csrf_match or not trans_match:
-                    raise NESAuthError(
-                        "Failed to extract B2C auth parameters"
-                    )
+                    raise NESAuthError("Failed to extract B2C auth parameters")
                 csrf_token = csrf_match.group(1)
                 trans_id = trans_match.group(1)
 
-            cookie_header = "; ".join(
-                f"{k}={v}" for k, v in raw_cookies.items()
-            )
+            cookie_header = "; ".join(f"{k}={v}" for k, v in raw_cookies.items())
 
             # Step 1b: POST /SelfAsserted → submit credentials
             from yarl import URL
 
             sa_url = (
-                f"{B2C_SELF_ASSERTED_URL}"
-                f"?tx={trans_id}&p=B2C_1A_NES_SignUpOrSignIn"
+                f"{B2C_SELF_ASSERTED_URL}?tx={trans_id}&p=B2C_1A_NES_SignUpOrSignIn"
             )
             login_data = (
                 f"request_type=RESPONSE"
@@ -243,8 +220,7 @@ class NESApiClient:
             headers = {
                 "X-CSRF-TOKEN": csrf_token,
                 "X-Requested-With": "XMLHttpRequest",
-                "Content-Type":
-                    "application/x-www-form-urlencoded; charset=UTF-8",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
                 "Cookie": cookie_header,
             }
 
@@ -257,25 +233,22 @@ class NESApiClient:
                 resp_text = await resp.text()
                 if resp.status == 200 and resp_text.startswith("{"):
                     import json as json_mod
+
                     result = json_mod.loads(resp_text)
                     if str(result.get("status", "")) != "200":
                         raise NESAuthError("Invalid email or password")
                 else:
-                    raise NESAuthError(
-                        "Unexpected B2C login response"
-                    )
+                    raise NESAuthError("Unexpected B2C login response")
 
                 # Capture new cookies
                 for hdr_key, hdr_val in resp.raw_headers:
                     if hdr_key.lower() == b"set-cookie":
                         cs = hdr_val.decode()
-                        raw_cookies[cs.split("=", 1)[0]] = (
-                            cs.split("=", 1)[1].split(";")[0]
-                        )
+                        raw_cookies[cs.split("=", 1)[0]] = cs.split("=", 1)[1].split(
+                            ";"
+                        )[0]
 
-            cookie_header = "; ".join(
-                f"{k}={v}" for k, v in raw_cookies.items()
-            )
+            cookie_header = "; ".join(f"{k}={v}" for k, v in raw_cookies.items())
 
             # Step 1c: GET /confirmed → redirect with auth code
             confirmed_url = (
@@ -292,9 +265,7 @@ class NESApiClient:
                 allow_redirects=False,
             ) as resp:
                 if resp.status not in (302, 303):
-                    raise NESAuthError(
-                        f"B2C confirm failed: HTTP {resp.status}"
-                    )
+                    raise NESAuthError(f"B2C confirm failed: HTTP {resp.status}")
                 location = resp.headers.get("Location", "")
                 query_params = parse_qs(urlparse(location).query)
                 if "error" in query_params:
@@ -315,13 +286,9 @@ class NESApiClient:
                 "scope": B2C_SCOPE,
             }
 
-            async with auth_session.post(
-                B2C_TOKEN_URL, data=token_data
-            ) as resp:
+            async with auth_session.post(B2C_TOKEN_URL, data=token_data) as resp:
                 if resp.status != 200:
-                    raise NESAuthError(
-                        f"B2C token exchange failed: HTTP {resp.status}"
-                    )
+                    raise NESAuthError(f"B2C token exchange failed: HTTP {resp.status}")
                 result = await resp.json()
                 id_token = result.get("id_token")
                 if not id_token:
@@ -333,9 +300,7 @@ class NESApiClient:
         """Generate PKCE code verifier and challenge."""
         verifier = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
         challenge = (
-            base64.urlsafe_b64encode(
-                hashlib.sha256(verifier.encode()).digest()
-            )
+            base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
             .rstrip(b"=")
             .decode()
         )
@@ -348,19 +313,14 @@ class NESApiClient:
             return
 
         url = f"{API_BASE_URL}/rest/oauth/token"
-        data = (
-            f"grant_type=refresh_token"
-            f"&refresh_token={self._refresh_token}"
-        )
+        data = f"grant_type=refresh_token&refresh_token={self._refresh_token}"
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
             "Authorization": "Basic d2ViQ2xpZW50SWRQYXNzd29yZDpzZWNyZXQ=",
         }
 
         try:
-            async with self._session.post(
-                url, data=data, headers=headers
-            ) as resp:
+            async with self._session.post(url, data=data, headers=headers) as resp:
                 if resp.status != 200:
                     LOGGER.debug("Token refresh failed, re-authenticating")
                     self._refresh_token = None
@@ -458,10 +418,7 @@ class NESApiClient:
             ) as resp:
                 self._verify_response(resp)
                 svc_data = await resp.json()
-                services = (
-                    svc_data.get("accountSummaryType", {}).get("services")
-                    or []
-                )
+                services = svc_data.get("accountSummaryType", {}).get("services") or []
                 if services:
                     svc = services[0]
                     self._service_id = svc.get("serviceId")
@@ -474,12 +431,9 @@ class NESApiClient:
             token_payload = self._access_token.split(".")[1] + "=="
             import base64 as b64
             import json as json_mod
-            token_user = json_mod.loads(
-                b64.b64decode(token_payload)
-            ).get("user", {})
-            self._customer_id = token_user.get(
-                "customerId", self._customer_id
-            )
+
+            token_user = json_mod.loads(b64.b64decode(token_payload)).get("user", {})
+            self._customer_id = token_user.get("customerId", self._customer_id)
 
             return result
 

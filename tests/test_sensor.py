@@ -44,7 +44,9 @@ class TestSensorDescriptions:
         assert len(SENSOR_DESCRIPTIONS) == 4
 
     def test_monthly_energy_is_energy_dashboard_compatible(self) -> None:
-        monthly = next(s for s in SENSOR_DESCRIPTIONS if s.key == "monthly_energy_usage")
+        monthly = next(
+            s for s in SENSOR_DESCRIPTIONS if s.key == "monthly_energy_usage"
+        )
         assert monthly.device_class == SensorDeviceClass.ENERGY
         assert monthly.state_class == SensorStateClass.TOTAL
         assert monthly.native_unit_of_measurement == "kWh"

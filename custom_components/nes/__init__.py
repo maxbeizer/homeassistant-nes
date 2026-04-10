@@ -28,13 +28,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: NESConfigEntry) -> bool:
         await client.async_authenticate()
         await client.async_get_customer()
     except NESAuthError as err:
-        raise ConfigEntryAuthFailed(
-            f"Authentication failed: {err}"
-        ) from err
+        raise ConfigEntryAuthFailed(f"Authentication failed: {err}") from err
     except NESConnectionError as err:
-        raise ConfigEntryNotReady(
-            f"Cannot connect to NES: {err}"
-        ) from err
+        raise ConfigEntryNotReady(f"Cannot connect to NES: {err}") from err
 
     coordinator = NESDataUpdateCoordinator(hass, client)
     await coordinator.async_config_entry_first_refresh()

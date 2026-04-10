@@ -15,8 +15,7 @@ B2C_REDIRECT_URI = "https://myaccount.nespower.com/eportal"
 B2C_SCOPE = "openid profile offline_access"
 
 B2C_BASE_URL = (
-    f"https://{B2C_TENANT}.b2clogin.com/"
-    f"{B2C_TENANT}.onmicrosoft.com/{B2C_POLICY}"
+    f"https://{B2C_TENANT}.b2clogin.com/{B2C_TENANT}.onmicrosoft.com/{B2C_POLICY}"
 )
 B2C_AUTHORIZE_URL = f"{B2C_BASE_URL}/oauth2/v2.0/authorize"
 B2C_TOKEN_URL = f"{B2C_BASE_URL}/oauth2/v2.0/token"

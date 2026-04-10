@@ -62,9 +62,7 @@ async def test_coordinator_connection_error_raises_update_failed(
 ) -> None:
     """Test coordinator converts connection errors to UpdateFailed."""
     client = MagicMock(spec=NESApiClient)
-    client.async_get_usage = AsyncMock(
-        side_effect=NESConnectionError("Network down")
-    )
+    client.async_get_usage = AsyncMock(side_effect=NESConnectionError("Network down"))
 
     coordinator = NESDataUpdateCoordinator(hass, client)
 

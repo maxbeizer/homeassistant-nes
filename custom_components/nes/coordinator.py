@@ -65,9 +65,7 @@ class NESDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         total_kwh = sum(
             _safe_float_or_zero(m.get("billedConsumption")) for m in usage_data
         )
-        total_cost = sum(
-            _safe_float_or_zero(m.get("billedCharge")) for m in usage_data
-        )
+        total_cost = sum(_safe_float_or_zero(m.get("billedCharge")) for m in usage_data)
 
         return {
             "monthly": usage_data,
