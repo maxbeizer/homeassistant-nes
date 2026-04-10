@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pytest
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 
-from custom_components.nes.coordinator import NESDataUpdateCoordinator
 from custom_components.nes.sensor import (
     SENSOR_DESCRIPTIONS,
-    NESSensorEntity,
     _safe_float,
 )
 
@@ -45,73 +41,63 @@ class TestSensorDescriptions:
     """Test sensor entity descriptions are correct."""
 
     def test_correct_number_of_sensors(self) -> None:
-        assert len(SENSOR_DESCRIPTIONS) == 5
+        assert len(SENSOR_DESCRIPTIONS) == 4
 
-    def test_daily_energy_is_energy_dashboard_compatible(self) -> None:
-        daily = next(s for s in SENSOR_DESCRIPTIONS if s.key == "daily_energy_usage")
-        assert daily.device_class == SensorDeviceClass.ENERGY
-        assert daily.state_class == SensorStateClass.TOTAL
-        assert daily.native_unit_of_measurement == "kWh"
-
-    def test_monthly_energy_is_energy_class(self) -> None:
+    def test_monthly_energy_is_energy_dashboard_compatible(self) -> None:
         monthly = next(s for s in SENSOR_DESCRIPTIONS if s.key == "monthly_energy_usage")
         assert monthly.device_class == SensorDeviceClass.ENERGY
+        assert monthly.state_class == SensorStateClass.TOTAL
+        assert monthly.native_unit_of_measurement == "kWh"
 
-    def test_cost_is_monetary(self) -> None:
-        cost = next(s for s in SENSOR_DESCRIPTIONS if s.key == "daily_energy_cost")
+    def test_monthly_cost_is_monetary(self) -> None:
+        cost = next(s for s in SENSOR_DESCRIPTIONS if s.key == "monthly_energy_cost")
         assert cost.device_class == SensorDeviceClass.MONETARY
 
-    def test_temps_are_temperature(self) -> None:
-        for key in ("daily_high_temp", "daily_low_temp"):
-            temp = next(s for s in SENSOR_DESCRIPTIONS if s.key == key)
-            assert temp.device_class == SensorDeviceClass.TEMPERATURE
-            assert temp.native_unit_of_measurement == "°F"
+    def test_yearly_energy_is_energy_class(self) -> None:
+        yearly = next(s for s in SENSOR_DESCRIPTIONS if s.key == "yearly_energy_usage")
+        assert yearly.device_class == SensorDeviceClass.ENERGY
+
+    def test_yearly_cost_is_monetary(self) -> None:
+        cost = next(s for s in SENSOR_DESCRIPTIONS if s.key == "yearly_energy_cost")
+        assert cost.device_class == SensorDeviceClass.MONETARY
 
 
 class TestSensorValues:
     """Test sensor value extraction from coordinator data."""
 
-    def _make_coordinator_data(self) -> dict:
+    def _make_data(self) -> dict:
         return {
-            "daily": [],
+            "monthly": [],
             "latest": {
-                "usageConsumptionValue": "19.0362",
-                "billedCharge": "2.58",
-                "usageHighTemp": "82",
-                "usageLowTemp": "60",
+                "billedConsumption": "293",
+                "billedCharge": "52.10",
             },
-            "monthly_total_kwh": 74.64,
-            "monthly_total_cost": 10.13,
+            "total_kwh": 1695.0,
+            "total_cost": 277.69,
         }
 
-    def test_daily_energy_value(self) -> None:
-        data = self._make_coordinator_data()
-        desc = next(s for s in SENSOR_DESCRIPTIONS if s.key == "daily_energy_usage")
-        assert desc.value_fn(data) == pytest.approx(19.0362)
-
     def test_monthly_energy_value(self) -> None:
-        data = self._make_coordinator_data()
+        data = self._make_data()
         desc = next(s for s in SENSOR_DESCRIPTIONS if s.key == "monthly_energy_usage")
-        assert desc.value_fn(data) == pytest.approx(74.64)
+        assert desc.value_fn(data) == pytest.approx(293.0)
 
-    def test_daily_cost_value(self) -> None:
-        data = self._make_coordinator_data()
-        desc = next(s for s in SENSOR_DESCRIPTIONS if s.key == "daily_energy_cost")
-        assert desc.value_fn(data) == pytest.approx(2.58)
+    def test_monthly_cost_value(self) -> None:
+        data = self._make_data()
+        desc = next(s for s in SENSOR_DESCRIPTIONS if s.key == "monthly_energy_cost")
+        assert desc.value_fn(data) == pytest.approx(52.10)
 
-    def test_high_temp_value(self) -> None:
-        data = self._make_coordinator_data()
-        desc = next(s for s in SENSOR_DESCRIPTIONS if s.key == "daily_high_temp")
-        assert desc.value_fn(data) == pytest.approx(82.0)
+    def test_yearly_energy_value(self) -> None:
+        data = self._make_data()
+        desc = next(s for s in SENSOR_DESCRIPTIONS if s.key == "yearly_energy_usage")
+        assert desc.value_fn(data) == pytest.approx(1695.0)
 
-    def test_low_temp_value(self) -> None:
-        data = self._make_coordinator_data()
-        desc = next(s for s in SENSOR_DESCRIPTIONS if s.key == "daily_low_temp")
-        assert desc.value_fn(data) == pytest.approx(60.0)
+    def test_yearly_cost_value(self) -> None:
+        data = self._make_data()
+        desc = next(s for s in SENSOR_DESCRIPTIONS if s.key == "yearly_energy_cost")
+        assert desc.value_fn(data) == pytest.approx(277.69)
 
     def test_values_with_none_data(self) -> None:
-        data = {"daily": [], "latest": {}, "monthly_total_kwh": 0.0, "monthly_total_cost": 0.0}
+        data = {"monthly": [], "latest": {}, "total_kwh": 0.0, "total_cost": 0.0}
         for desc in SENSOR_DESCRIPTIONS:
-            # Should not raise, should return None or 0.0
             value = desc.value_fn(data)
             assert value is None or isinstance(value, float)

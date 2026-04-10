@@ -50,12 +50,17 @@ class NESConfigFlow(ConfigFlow, domain=DOMAIN):
                 LOGGER.exception("Unexpected error during config flow")
                 errors["base"] = "unknown"
             else:
-                customer_id = account.get("customerId", user_input["username"])
+                customer_id = client.customer_id or user_input["username"]
                 await self.async_set_unique_id(str(customer_id))
                 self._abort_if_unique_id_configured()
 
+                acct_num = (
+                    account.get("accountContext", {}).get("accountNumber", "")
+                )
+                title = f"NES ({acct_num})" if acct_num else f"NES ({customer_id})"
+
                 return self.async_create_entry(
-                    title=f"NES ({customer_id})",
+                    title=title,
                     data={
                         "username": user_input["username"],
                         "password": user_input["password"],

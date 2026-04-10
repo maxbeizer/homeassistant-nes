@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -24,12 +24,10 @@ async def test_coordinator_successful_update(hass: HomeAssistant) -> None:
     coordinator = NESDataUpdateCoordinator(hass, client)
     data = await coordinator._async_update_data()
 
-    assert len(data["daily"]) == 3
-    # Latest should be the most recent date
-    assert data["latest"]["usageDate"] == "04/07/2026"
-    # Monthly totals
-    assert data["monthly_total_kwh"] == pytest.approx(74.64, abs=0.01)
-    assert data["monthly_total_cost"] == pytest.approx(10.13, abs=0.01)
+    assert len(data["monthly"]) == 3
+    assert data["latest"]["chargeDate"] == "Apr 2026"
+    assert data["total_kwh"] == pytest.approx(1695.0, abs=1)
+    assert data["total_cost"] == pytest.approx(277.69, abs=0.01)
 
 
 async def test_coordinator_empty_data(hass: HomeAssistant) -> None:
@@ -40,10 +38,10 @@ async def test_coordinator_empty_data(hass: HomeAssistant) -> None:
     coordinator = NESDataUpdateCoordinator(hass, client)
     data = await coordinator._async_update_data()
 
-    assert data["daily"] == []
+    assert data["monthly"] == []
     assert data["latest"] == {}
-    assert data["monthly_total_kwh"] == 0.0
-    assert data["monthly_total_cost"] == 0.0
+    assert data["total_kwh"] == 0.0
+    assert data["total_cost"] == 0.0
 
 
 async def test_coordinator_auth_error_raises_reauth(
@@ -79,16 +77,8 @@ async def test_coordinator_handles_malformed_values(
 ) -> None:
     """Test coordinator handles non-numeric values gracefully."""
     bad_data = [
-        {
-            "usageDate": "04/07/2026",
-            "usageConsumptionValue": "N/A",
-            "billedCharge": None,
-        },
-        {
-            "usageDate": "04/06/2026",
-            "usageConsumptionValue": "10.5",
-            "billedCharge": "1.50",
-        },
+        {"chargeDate": "Mar 2026", "billedConsumption": "N/A", "billedCharge": None},
+        {"chargeDate": "Apr 2026", "billedConsumption": "500", "billedCharge": "85.00"},
     ]
     client = MagicMock(spec=NESApiClient)
     client.async_get_usage = AsyncMock(return_value=bad_data)
@@ -96,6 +86,5 @@ async def test_coordinator_handles_malformed_values(
     coordinator = NESDataUpdateCoordinator(hass, client)
     data = await coordinator._async_update_data()
 
-    # "N/A" and None should be treated as 0
-    assert data["monthly_total_kwh"] == pytest.approx(10.5, abs=0.01)
-    assert data["monthly_total_cost"] == pytest.approx(1.50, abs=0.01)
+    assert data["total_kwh"] == pytest.approx(500.0, abs=0.01)
+    assert data["total_cost"] == pytest.approx(85.00, abs=0.01)

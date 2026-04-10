@@ -33,69 +33,56 @@ def mock_nes_client() -> Generator[MagicMock]:
         client.async_authenticate = AsyncMock()
         client.async_get_customer = AsyncMock(
             return_value={
-                "customerId": "12345",
-                "accountContext": {"accountNumber": "98765"},
+                "accountContext": {
+                    "accountNumber": "7013678056",
+                    "userID": "test@example.com",
+                },
+                "accountSummaryType": {},
             }
         )
-        client.async_get_usage = AsyncMock(
-            return_value=MOCK_USAGE_DATA,
-        )
-        client.customer_id = "12345"
+        client.async_get_usage = AsyncMock(return_value=MOCK_USAGE_DATA)
+        client.customer_id = "105112"
         yield client
-
-
-@pytest.fixture
-def mock_config_entry(hass: HomeAssistant) -> MagicMock:
-    """Create a mock config entry."""
-    from homeassistant.config_entries import ConfigEntry
-
-    entry = ConfigEntry(
-        version=1,
-        minor_version=1,
-        domain=DOMAIN,
-        title="NES (12345)",
-        data={
-            "username": "test@example.com",
-            "password": "testpassword",
-        },
-        source="user",
-        unique_id="12345",
-    )
-    return entry
 
 
 MOCK_USAGE_DATA = [
     {
-        "usageDate": "04/05/2026",
-        "usageConsumptionValue": "25.5",
-        "billedCharge": "3.45",
-        "billedConsumption": "25.5",
-        "usageHighTemp": "78",
-        "usageLowTemp": "55",
-        "uom": "KWH",
-        "netReceivedValue": "0",
-        "netReceivedCategory": None,
+        "chargeDate": "Feb 2026",
+        "chargeDateRaw": "26-Feb-2026",
+        "billedConsumption": "605",
+        "billedCharge": "97.09",
+        "daysOfService": "28",
+        "counter": "KWH",
+        "uom": "kWh",
+        "meterNumber": "305244",
+        "avgHigh": 0,
+        "avgLow": 0,
+        "temp": 43,
     },
     {
-        "usageDate": "04/06/2026",
-        "usageConsumptionValue": "19.0362",
-        "billedCharge": "2.58",
-        "billedConsumption": "19.0362",
-        "usageHighTemp": "82",
-        "usageLowTemp": "60",
-        "uom": "KWH",
-        "netReceivedValue": "0",
-        "netReceivedCategory": None,
+        "chargeDate": "Mar 2026",
+        "chargeDateRaw": "26-Mar-2026",
+        "billedConsumption": "797",
+        "billedCharge": "128.50",
+        "daysOfService": "31",
+        "counter": "KWH",
+        "uom": "kWh",
+        "meterNumber": "305244",
+        "avgHigh": 0,
+        "avgLow": 0,
+        "temp": 55,
     },
     {
-        "usageDate": "04/07/2026",
-        "usageConsumptionValue": "30.1",
-        "billedCharge": "4.10",
-        "billedConsumption": "30.1",
-        "usageHighTemp": "85",
-        "usageLowTemp": "62",
-        "uom": "KWH",
-        "netReceivedValue": "0",
-        "netReceivedCategory": None,
+        "chargeDate": "Apr 2026",
+        "chargeDateRaw": "26-Apr-2026",
+        "billedConsumption": "293",
+        "billedCharge": "52.10",
+        "daysOfService": "30",
+        "counter": "KWH",
+        "uom": "kWh",
+        "meterNumber": "305244",
+        "avgHigh": 0,
+        "avgLow": 0,
+        "temp": 65,
     },
 ]

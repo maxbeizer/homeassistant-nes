@@ -61,12 +61,12 @@ async def test_user_flow_success(
     )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["title"] == "NES (12345)"
+    assert result["title"] == "NES (7013678056)"
     assert result["data"] == {
         "username": "test@example.com",
         "password": "testpassword",
     }
-    assert result["result"].unique_id == "12345"
+    assert result["result"].unique_id == "105112"
 
 
 async def test_user_flow_invalid_auth(
@@ -140,9 +140,9 @@ async def test_user_flow_duplicate_account(
     # Create an existing entry with the same unique_id
     entry = MockConfigEntry(
         domain=DOMAIN,
-        title="NES (12345)",
+        title="NES (7013678056)",
         data={"username": "existing@example.com", "password": "pass"},
-        unique_id="12345",
+        unique_id="105112",
     )
     entry.add_to_hass(hass)
 
