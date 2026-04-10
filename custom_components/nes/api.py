@@ -85,7 +85,7 @@ class NESApiClient:
         try:
             # Step 1: Get B2C id_token
             id_token = await self._async_b2c_login()
-            LOGGER.warning("B2C login complete, exchanging for SSO token")
+            LOGGER.debug("B2C login complete, exchanging for SSO token")
 
             # Step 2: Exchange id_token for SSO session token
             # The /rest/auth/jwt endpoint creates a server-side session
@@ -114,7 +114,7 @@ class NESApiClient:
                     )
                 sso_token = sso_match.group(1)
 
-            LOGGER.warning("Got SSO token, exchanging for API token")
+            LOGGER.debug("Got SSO token, exchanging for API token")
 
             # Step 3: Exchange SSO token for NES API token
             url = f"{API_BASE_URL}/rest/oauth/token"
@@ -157,7 +157,7 @@ class NESApiClient:
                 self._token_expiry = (
                     dt_util.utcnow() + timedelta(seconds=expires_in)
                 )
-                LOGGER.warning("Successfully authenticated with NES")
+                LOGGER.debug("Successfully authenticated with NES")
 
         except aiohttp.ClientError as err:
             raise NESConnectionError(
@@ -359,7 +359,7 @@ class NESApiClient:
                 url, data=data, headers=headers
             ) as resp:
                 if resp.status != 200:
-                    LOGGER.warning("Token refresh failed, re-authenticating")
+                    LOGGER.debug("Token refresh failed, re-authenticating")
                     self._refresh_token = None
                     await self.async_authenticate()
                     return
@@ -369,10 +369,10 @@ class NESApiClient:
                 self._refresh_token = result.get("refresh_token", self._refresh_token)
                 expires_in = result.get("expires_in", 3600)
                 self._token_expiry = dt_util.utcnow() + timedelta(seconds=expires_in)
-                LOGGER.warning("Successfully refreshed token")
+                LOGGER.debug("Successfully refreshed token")
 
         except aiohttp.ClientError:
-            LOGGER.warning("Token refresh connection error, re-authenticating")
+            LOGGER.debug("Token refresh connection error, re-authenticating")
             self._refresh_token = None
             await self.async_authenticate()
 
