@@ -24,6 +24,8 @@ jobs:
           pip install homeassistant pytest-homeassistant-custom-component
       - name: Run tests
         run: pytest tests/ -v
+        env:
+          PYTHONPATH: ${{ github.workspace }}
 
   validate:
     runs-on: ubuntu-latest
