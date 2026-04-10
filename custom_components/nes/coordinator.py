@@ -56,27 +56,22 @@ class NESDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise UpdateFailed(f"Error communicating with NES API: {err}") from err
 
         if not usage_data:
-            return {"daily": [], "latest": {}, "monthly_total_kwh": 0.0, "monthly_total_cost": 0.0}
+            return {"monthly": [], "latest": {}, "total_kwh": 0.0, "total_cost": 0.0}
 
-        # Sort by date, most recent last
-        sorted_data = sorted(
-            usage_data,
-            key=lambda x: x.get("usageDate", ""),
+        # Data comes as monthly history sorted chronologically
+        # Each item: chargeDate, billedConsumption, billedCharge, etc.
+        latest = usage_data[-1] if usage_data else {}
+
+        total_kwh = sum(
+            _safe_float_or_zero(m.get("billedConsumption")) for m in usage_data
         )
-
-        latest = sorted_data[-1] if sorted_data else {}
-
-        # Sum up monthly totals
-        monthly_total_kwh = sum(
-            _safe_float_or_zero(day.get("usageConsumptionValue")) for day in sorted_data
-        )
-        monthly_total_cost = sum(
-            _safe_float_or_zero(day.get("billedCharge")) for day in sorted_data
+        total_cost = sum(
+            _safe_float_or_zero(m.get("billedCharge")) for m in usage_data
         )
 
         return {
-            "daily": sorted_data,
+            "monthly": usage_data,
             "latest": latest,
-            "monthly_total_kwh": round(monthly_total_kwh, 2),
-            "monthly_total_cost": round(monthly_total_cost, 2),
+            "total_kwh": round(total_kwh, 2),
+            "total_cost": round(total_cost, 2),
         }

@@ -29,20 +29,17 @@
   },
   "entity": {
     "sensor": {
-      "daily_energy_usage": {
-        "name": "Daily energy usage"
-      },
       "monthly_energy_usage": {
         "name": "Monthly energy usage"
       },
-      "daily_energy_cost": {
-        "name": "Daily energy cost"
+      "monthly_energy_cost": {
+        "name": "Monthly energy cost"
       },
-      "daily_high_temp": {
-        "name": "Daily high temperature"
+      "yearly_energy_usage": {
+        "name": "Yearly energy usage"
       },
-      "daily_low_temp": {
-        "name": "Daily low temperature"
+      "yearly_energy_cost": {
+        "name": "Yearly energy cost"
       }
     }
   }

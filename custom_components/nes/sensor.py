@@ -12,7 +12,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfEnergy, UnitOfTemperature
+from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -30,26 +30,17 @@ class NESSensorEntityDescription(SensorEntityDescription):
 
 SENSOR_DESCRIPTIONS: tuple[NESSensorEntityDescription, ...] = (
     NESSensorEntityDescription(
-        key="daily_energy_usage",
-        translation_key="daily_energy_usage",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL,
-        suggested_display_precision=2,
-        value_fn=lambda data: _safe_float(data.get("latest", {}).get("usageConsumptionValue")),
-    ),
-    NESSensorEntityDescription(
         key="monthly_energy_usage",
         translation_key="monthly_energy_usage",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL,
-        suggested_display_precision=2,
-        value_fn=lambda data: data.get("monthly_total_kwh"),
+        suggested_display_precision=0,
+        value_fn=lambda data: _safe_float(data.get("latest", {}).get("billedConsumption")),
     ),
     NESSensorEntityDescription(
-        key="daily_energy_cost",
-        translation_key="daily_energy_cost",
+        key="monthly_energy_cost",
+        translation_key="monthly_energy_cost",
         native_unit_of_measurement="USD",
         device_class=SensorDeviceClass.MONETARY,
         state_class=SensorStateClass.TOTAL,
@@ -57,22 +48,22 @@ SENSOR_DESCRIPTIONS: tuple[NESSensorEntityDescription, ...] = (
         value_fn=lambda data: _safe_float(data.get("latest", {}).get("billedCharge")),
     ),
     NESSensorEntityDescription(
-        key="daily_high_temp",
-        translation_key="daily_high_temp",
-        native_unit_of_measurement=UnitOfTemperature.FAHRENHEIT,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
+        key="yearly_energy_usage",
+        translation_key="yearly_energy_usage",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL,
         suggested_display_precision=0,
-        value_fn=lambda data: _safe_float(data.get("latest", {}).get("usageHighTemp")),
+        value_fn=lambda data: data.get("total_kwh"),
     ),
     NESSensorEntityDescription(
-        key="daily_low_temp",
-        translation_key="daily_low_temp",
-        native_unit_of_measurement=UnitOfTemperature.FAHRENHEIT,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=0,
-        value_fn=lambda data: _safe_float(data.get("latest", {}).get("usageLowTemp")),
+        key="yearly_energy_cost",
+        translation_key="yearly_energy_cost",
+        native_unit_of_measurement="USD",
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=2,
+        value_fn=lambda data: data.get("total_cost"),
     ),
 )
 

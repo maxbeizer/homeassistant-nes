@@ -26,7 +26,6 @@ B2C_CONFIRMED_URL = f"{B2C_BASE_URL}/api/CombinedSigninAndSignup/confirmed"
 # NES API
 API_BASE_URL = "https://myaccount.nespower.com"
 API_ENDPOINT_CUSTOMER = "/rest/account/customer/"
-API_ENDPOINT_USAGE = "/rest/usage/detail/month"
 
 # Polling interval (seconds)
 UPDATE_INTERVAL_HOURS = 6

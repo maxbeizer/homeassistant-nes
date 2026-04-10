@@ -18,7 +18,6 @@ from homeassistant.util import dt as dt_util
 from .const import (
     API_BASE_URL,
     API_ENDPOINT_CUSTOMER,
-    API_ENDPOINT_USAGE,
     B2C_AUTHORIZE_URL,
     B2C_CLIENT_ID,
     B2C_CONFIRMED_URL,
@@ -63,8 +62,11 @@ class NESApiClient:
         self._access_token: str | None = None
         self._refresh_token: str | None = None
         self._token_expiry: datetime | None = None
-        self._account_context: dict[str, Any] | None = None
         self._customer_id: str | None = None
+        self._account_number: str | None = None
+        self._service_id: str | None = None
+        self._service_type: str | None = None
+        self._payment_due_date: str | None = None
         self._token_lock = asyncio.Lock()
 
     @property
@@ -396,26 +398,23 @@ class NESApiClient:
         }
 
     async def async_get_customer(self) -> dict[str, Any]:
-        """Fetch customer/account information."""
+        """Fetch customer and service information.
+
+        Calls three endpoints to build the full account context:
+        1. /rest/account/customer/ → account number, customer ID
+        2. /rest/account/summary → payment due date (used as billCycleCode)
+        3. /rest/account/services → service ID, service type
+        """
         await self._async_ensure_token()
 
         url = f"{API_BASE_URL}{API_ENDPOINT_CUSTOMER}"
 
         try:
+            # 1. Get basic customer info
             async with self._session.post(
                 url, headers=self._auth_headers(), json={}
             ) as resp:
-                LOGGER.warning(
-                    "Customer API: status=%d, content_type=%s",
-                    resp.status,
-                    resp.headers.get("Content-Type", ""),
-                )
                 if resp.status == 401:
-                    resp_text = await resp.text()
-                    LOGGER.warning(
-                        "Customer API 401: %s", resp_text[:300]
-                    )
-                    # Token may be invalid, try re-auth
                     await self.async_authenticate()
                     async with self._session.post(
                         url, headers=self._auth_headers(), json={}
@@ -426,49 +425,87 @@ class NESApiClient:
                     self._verify_response(resp)
                     result = await resp.json()
 
-            if isinstance(result, list) and result:
-                if len(result) > 1:
-                    LOGGER.warning(
-                        "Multiple NES accounts found, using first: %s",
-                        [a.get("customerId") for a in result],
-                    )
-                account = result[0]
-            elif isinstance(result, dict):
-                account = result
-            else:
-                raise NESApiError("Unexpected customer response format")
+            self._customer_id = result.get("accountContext", {}).get(
+                "userID"
+            ) or result.get("customerId")
+            acct_ctx = result.get("accountContext", {})
+            acct_num = acct_ctx.get("accountNumber")
+            self._account_number = acct_num
 
-            self._customer_id = account.get("customerId")
-            self._account_context = account.get("accountContext", account)
-            return account
+            # 2. Get account summary for paymentDueDate
+            req = {
+                "customerId": self._customer_id,
+                "accountContext": {"accountNumber": acct_num},
+            }
+            async with self._session.post(
+                f"{API_BASE_URL}/rest/account/summary",
+                headers=self._auth_headers(),
+                json=req,
+            ) as resp:
+                self._verify_response(resp)
+                summary = await resp.json()
+                summary_type = summary.get("accountSummaryType", {})
+                self._payment_due_date = summary_type.get("paymentDueDate")
+
+            # 3. Get services for serviceId and serviceType
+            async with self._session.post(
+                f"{API_BASE_URL}/rest/account/services",
+                headers=self._auth_headers(),
+                json=req,
+            ) as resp:
+                self._verify_response(resp)
+                svc_data = await resp.json()
+                services = (
+                    svc_data.get("accountSummaryType", {}).get("services")
+                    or []
+                )
+                if services:
+                    svc = services[0]
+                    self._service_id = svc.get("serviceId")
+                    self._service_type = svc.get("serviceType")
+                else:
+                    self._service_id = None
+                    self._service_type = None
+
+            # Use customerId from the token (numeric ID)
+            token_payload = self._access_token.split(".")[1] + "=="
+            import base64 as b64
+            import json as json_mod
+            token_user = json_mod.loads(
+                b64.b64decode(token_payload)
+            ).get("user", {})
+            self._customer_id = token_user.get(
+                "customerId", self._customer_id
+            )
+
+            return result
 
         except aiohttp.ClientError as err:
             raise NESConnectionError(
                 f"Connection error fetching customer info: {err}"
             ) from err
 
-    async def async_get_usage(
-        self,
-        start_date: datetime | None = None,
-        end_date: datetime | None = None,
-    ) -> list[dict[str, Any]]:
-        """Fetch usage data for a date range."""
+    async def async_get_usage(self) -> list[dict[str, Any]]:
+        """Fetch 13-month usage history."""
         await self._async_ensure_token()
 
-        if end_date is None:
-            end_date = dt_util.utcnow()
-        if start_date is None:
-            start_date = end_date - timedelta(days=30)
+        if not self._service_id:
+            LOGGER.warning("No serviceId available, cannot fetch usage")
+            return []
 
-        url = f"{API_BASE_URL}{API_ENDPOINT_USAGE}"
+        url = f"{API_BASE_URL}/rest/usage"
         payload = {
-            "startDate": start_date.strftime("%m/%d/%Y"),
-            "endDate": end_date.strftime("%m/%d/%Y"),
+            "customerId": self._customer_id,
+            "accountContext": {
+                "accountNumber": self._account_number,
+                "serviceId": self._service_id,
+                "billCycleCode": self._payment_due_date,
+                "serviceType": self._service_type,
+            },
+            "direction": "current",
+            "page": "1",
+            "maxPerPage": "13",
         }
-
-        # Include account context if available
-        if self._account_context:
-            payload["accountContext"] = self._account_context
 
         try:
             async with self._session.post(
@@ -480,10 +517,12 @@ class NESApiClient:
                         url, headers=self._auth_headers(), json=payload
                     ) as retry_resp:
                         self._verify_response(retry_resp)
-                        return await retry_resp.json()
+                        result = await retry_resp.json()
+                else:
+                    self._verify_response(resp)
+                    result = await resp.json()
 
-                self._verify_response(resp)
-                return await resp.json()
+            return result.get("history", [])
 
         except aiohttp.ClientError as err:
             raise NESConnectionError(
