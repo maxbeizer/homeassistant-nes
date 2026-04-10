@@ -89,7 +89,10 @@ class NESApiClient:
 
             # Step 2: Exchange id_token for SSO session token
             # The /rest/auth/jwt endpoint creates a server-side session
-            # and redirects to /#/ssohome/<sso_token>
+            # and redirects to /#/ssohome/<sso_token>.
+            # Note: the NES API requires the id_token as a query parameter
+            # (this is how their Angular app sends it via browser redirect).
+            # The id_token is short-lived and single-use.
             jwt_url = f"{API_BASE_URL}/rest/auth/jwt?id_token={id_token}"
             browser_headers = {
                 "User-Agent": (
