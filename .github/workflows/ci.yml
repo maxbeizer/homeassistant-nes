@@ -21,7 +21,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install homeassistant pytest-homeassistant-custom-component
+          pip install homeassistant "pytest-homeassistant-custom-component>=0.13.322"
       - name: Run tests
         run: pytest tests/ -v -p no:unraisableexception
         env:
